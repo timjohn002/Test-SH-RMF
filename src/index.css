@@ -1,0 +1,27 @@
+@import 'tailwindcss';
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+/* Tailwind's preflight caps img width, which breaks Leaflet image overlays when zoomed in. */
+.leaflet-container img {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.leaflet-container {
+  background: var(--color-slate-200);
+  font: inherit;
+}
+
+/* Calibration tools: show a crosshair instead of the grab hand. */
+.plan-pick.leaflet-container {
+  cursor: crosshair;
+}
