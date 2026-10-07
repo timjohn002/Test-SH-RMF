@@ -69,11 +69,17 @@ export async function requireAdmin(req: Request): Promise<SessionUser> {
 
 type Params = Record<string, string | undefined>
 
-/** Wrap a function handler with origin checks and uniform error responses. */
-export function handler(fn: (req: Request, params: Params) => Promise<Response>) {
+/**
+ * Wrap a function handler with origin checks and uniform error responses.
+ * Server-to-server endpoints (vendor webhooks) pass `checkOrigin: false`.
+ */
+export function handler(
+  fn: (req: Request, params: Params) => Promise<Response>,
+  options: { checkOrigin?: boolean } = {},
+) {
   return async (req: Request, context: { params?: Params }): Promise<Response> => {
     try {
-      checkOrigin(req)
+      if (options.checkOrigin !== false) checkOrigin(req)
       return await fn(req, context.params ?? {})
     } catch (err) {
       if (err instanceof HttpError) return json({ error: err.message }, { status: err.status })

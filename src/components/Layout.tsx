@@ -35,13 +35,21 @@ export function Layout() {
           <NavLink to="/" end className={navClass}>
             Map
           </NavLink>
+          <NavLink to="/robots" className={navClass}>
+            Robots
+          </NavLink>
           <NavLink to="/setup" className={navClass}>
             Setup
           </NavLink>
           {user?.role === 'admin' && (
-            <NavLink to="/users" className={navClass}>
-              Users
-            </NavLink>
+            <>
+              <NavLink to="/vendors" className={navClass}>
+                Vendors
+              </NavLink>
+              <NavLink to="/users" className={navClass}>
+                Users
+              </NavLink>
+            </>
           )}
         </nav>
 
