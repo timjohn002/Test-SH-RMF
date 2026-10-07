@@ -48,6 +48,8 @@ export const keenonAdapter: VendorAdapter = {
   settingsSchema,
   secretFields: KEENON_SECRET_FIELDS,
   credentialSettings: ['region', 'custom_base_url', 'client_id'],
+  // Keenon disables IPs/clients that query too often (610609 / 617000).
+  robotCapabilities: { refresh: true, refreshCooldownMs: 10_000 },
 
   isConfigured(config) {
     const settings = settingsSchema.safeParse(config.settings)

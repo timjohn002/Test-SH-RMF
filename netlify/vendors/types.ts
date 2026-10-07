@@ -75,6 +75,13 @@ export interface VendorAdapter {
   isConfigured(config: VendorConfigRow): boolean
   /** Settings keys whose change invalidates the cached API token. */
   credentialSettings: readonly string[]
+  /** What the Robots page may do with this vendor's robots. */
+  robotCapabilities: {
+    /** On-demand live status pull (`fetchRobotStatus`). */
+    refresh: boolean
+    /** Minimum gap between refreshes of one robot (vendor rate limits). */
+    refreshCooldownMs: number
+  }
 
   testConnection(ctx: VendorContext): Promise<VendorTestResult>
   fetchSyncData(ctx: VendorContext): Promise<SyncData>

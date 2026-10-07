@@ -162,3 +162,23 @@ export interface Robot {
   last_refreshed_at: string | null
   updated_at: string
 }
+
+/** A vendor as the Robots page needs it (any logged-in user may see this). */
+export interface RobotVendorInfo {
+  id: string
+  name: string
+  status: VendorStatus
+  capabilities: {
+    refresh: boolean
+    refresh_cooldown_ms: number
+  }
+}
+
+export interface RobotGroup {
+  vendor: RobotVendorInfo
+  robots: Robot[]
+}
+
+export interface RobotsResponse {
+  groups: RobotGroup[]
+}

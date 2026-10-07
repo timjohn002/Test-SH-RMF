@@ -3,7 +3,7 @@ import { ErrorBox, FullPageSpinner, errorMessage } from '../components/ui'
 import { VendorStatusBadge } from '../components/vendors/common'
 import { useVendors } from '../hooks/useVendors'
 import { timeAgo } from '../lib/format'
-import { VENDOR_CONFIG_PAGES } from '../vendors'
+import { VENDOR_UI } from '../vendors'
 
 /** `/vendors`: the robot vendors this build supports. */
 export function VendorsPage() {
@@ -54,7 +54,7 @@ export function VendorsPage() {
 /** `/vendors/:vendorId`: hands off to the vendor's own config page. */
 export function VendorConfigPage() {
   const { vendorId = '' } = useParams()
-  const Page = VENDOR_CONFIG_PAGES[vendorId]
+  const Page = VENDOR_UI[vendorId]?.ConfigPage
 
   return (
     <div className="h-full overflow-y-auto">
