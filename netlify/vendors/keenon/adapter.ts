@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import { KEENON_SECRET_FIELDS, keenonBaseUrl, type KeenonSettings } from '../../../src/vendors/keenon/shared'
-import type { RobotPatch, SyncedRobot, VendorAdapter, VendorConfigRow, VendorContext } from '../types'
-import { getBatteryLevel, getCleanStatus, getRobotStatus, getRobots, getStores } from './api'
+import type { SyncedRobot, VendorAdapter, VendorConfigRow, VendorContext } from '../types'
+import { getRobots, getStores } from './api'
 import { KeenonClient, KeenonError } from './client'
-import { KEENON_ONLINE_TYPE, KEENON_OK } from './types'
+import { KEENON_OK, KEENON_ONLINE_TYPE, type KeenonRobot } from './types'
 import { interpretKeenonCallback, verifyKeenonSignature } from './webhook'
 
 const settingsSchema = z.object({
@@ -41,6 +41,42 @@ function clientFor(ctx: VendorContext): KeenonClient {
   })
 }
 
+/** Keenon sends onlineStatus as 1/0 (robot list) or true/false (other APIs). */
+export function keenonOnline(value: unknown): boolean | null {
+  if (value === 1 || value === true || value === '1' || value === 'true') return true
+  if (value === 0 || value === false || value === '0' || value === 'false') return false
+  return null
+}
+
+/** Map one robot-list entry (`store/robot/list`) to our robot fields. */
+export function keenonRobotFromList(r: KeenonRobot, storeId: string): SyncedRobot {
+  return {
+    external_id: r.robotId,
+    store_external_id: storeId,
+    name: r.robotName ?? null,
+    model: r.robotModel ?? null,
+    app_version: r.appVersion ?? null,
+    online: keenonOnline(r.onlineStatus),
+    online_type: r.onlineType !== undefined ? (KEENON_ONLINE_TYPE[r.onlineType] ?? String(r.onlineType)) : null,
+    battery: typeof r.power === 'number' ? r.power : null,
+  }
+}
+
+/**
+ * Robots of the given stores via `/api/open/data/v1/store/robot/list` — the source of truth
+ * for online status (the scene status API disagrees for some robots, e.g. cleaning robots).
+ */
+export async function fetchStoreRobots(client: KeenonClient, storeIds: string[]): Promise<SyncedRobot[]> {
+  const robots: SyncedRobot[] = []
+  // Sequential on purpose: Keenon rate-limits by client and IP.
+  for (const storeId of storeIds) {
+    for (const r of await getRobots(client, storeId)) {
+      if (r.robotId) robots.push(keenonRobotFromList(r, storeId))
+    }
+  }
+  return robots
+}
+
 export const keenonAdapter: VendorAdapter = {
   id: 'keenon',
   name: 'Keenon',
@@ -72,25 +108,10 @@ export const keenonAdapter: VendorAdapter = {
     const stores = await getStores(client)
     const selected = store_ids.length ? stores.filter((s) => store_ids.includes(s.storeId)) : stores
 
-    const robots: SyncedRobot[] = []
-    // Sequential on purpose: Keenon rate-limits by client and IP.
-    for (const store of selected) {
-      for (const r of await getRobots(client, store.storeId)) {
-        if (!r.robotId) continue
-        const online = r.onlineStatus === undefined ? null : r.onlineStatus === 1
-        robots.push({
-          external_id: r.robotId,
-          store_external_id: store.storeId,
-          name: r.robotName ?? null,
-          model: r.robotModel ?? null,
-          app_version: r.appVersion ?? null,
-          online,
-          online_type: r.onlineType !== undefined ? (KEENON_ONLINE_TYPE[r.onlineType] ?? String(r.onlineType)) : null,
-          battery: typeof r.power === 'number' ? r.power : null,
-          ...(online === false ? { work_state: 'offline' as const } : {}),
-        })
-      }
-    }
+    const robots = await fetchStoreRobots(
+      client,
+      selected.map((s) => s.storeId),
+    )
 
     return {
       stores: stores.map((s) => ({
@@ -104,29 +125,12 @@ export const keenonAdapter: VendorAdapter = {
     }
   },
 
-  async fetchRobotStatus(ctx, robotId) {
+  async refreshRobots(ctx) {
     const client = clientFor(ctx)
-    try {
-      const status = await getRobotStatus(client, robotId)
-      if (!status) return {}
-      const patch: RobotPatch = {
-        online: status.onlineStatus ?? null,
-        can_be_called: status.canBeCalled ?? null,
-        charging: status.chargeStatus === undefined ? null : status.chargeStatus === 1,
-        battery: typeof status.power === 'number' ? status.power : null,
-      }
-      if (status.robotName) patch.name = status.robotName
-      if (status.onlineStatus === false) patch.work_state = 'offline'
-      return patch
-    } catch (err) {
-      // The scene status API is for delivery/hotel robots; cleaning robots use their own.
-      if (!(err instanceof KeenonError) || err.code === null || err.code === KEENON_OK) throw err
-      const clean = await getCleanStatus(client, robotId)
-      if (!clean) throw err
-      const { patch } = interpretKeenonCallback({ bizType: 'CleanRobotStatus', data: { ...clean, robotSn: robotId } })
-      const battery = await getBatteryLevel(client, robotId).catch(() => null)
-      return { ...patch, ...(battery !== null ? { battery } : {}) }
-    }
+    const { store_ids } = settingsOf(ctx.config)
+    // Selected stores, or every store of the account (one extra call) when none are selected.
+    const storeIds = store_ids.length ? store_ids : (await getStores(client)).map((s) => s.storeId)
+    return fetchStoreRobots(client, storeIds)
   },
 
   verifyWebhook(config, rawBody, headers) {

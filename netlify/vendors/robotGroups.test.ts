@@ -29,7 +29,7 @@ function robot(vendor: string, external_id: string, name: string | null = null):
 const KNOWN: Record<string, string> = { keenon: 'Keenon', pudu: 'Pudu' }
 const info = (id: string): RobotVendorInfo =>
   KNOWN[id]
-    ? { id, name: KNOWN[id], status: 'connected', capabilities: { refresh: true, refresh_cooldown_ms: 10_000 } }
+    ? { id, name: KNOWN[id], status: 'connected', capabilities: { refresh: true, refresh_cooldown_ms: 10_000 }, last_refreshed_at: null }
     : unknownVendorInfo(id)
 
 describe('groupRobots', () => {
@@ -49,6 +49,14 @@ describe('groupRobots', () => {
   it('falls back to the serial number for unnamed robots', () => {
     const [group] = groupRobots([robot('keenon', 'ZZ', 'Alpha'), robot('keenon', 'AA:BB')], info)
     expect(group.robots.map((r) => r.external_id)).toEqual(['AA:BB', 'ZZ'])
+  })
+
+  it("reports each vendor's most recent refresh", () => {
+    const a = { ...robot('keenon', 'K1'), last_refreshed_at: '2026-10-07T07:00:00Z' }
+    const b = { ...robot('keenon', 'K2'), last_refreshed_at: '2026-10-07T08:00:00Z' }
+    const [keenon, pudu] = groupRobots([a, b, robot('pudu', 'P1')], info)
+    expect(keenon.vendor.last_refreshed_at).toBe('2026-10-07T08:00:00Z')
+    expect(pudu.vendor.last_refreshed_at).toBeNull()
   })
 
   it('keeps robots of unknown vendors in their own group without refresh', () => {

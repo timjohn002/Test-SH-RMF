@@ -2,7 +2,7 @@ import type { Config } from '@netlify/functions'
 import { timingSafeEqual } from 'node:crypto'
 import { HttpError, handler, json, methodNotAllowed } from '../lib/http'
 import { findAdapter } from '../vendors/index'
-import { applyRobotPatch, headersForLog, loadConfig, recordEvent, updateConfig } from '../vendors/store'
+import { headersForLog, loadConfig, persistRobots, recordEvent, updateConfig } from '../vendors/store'
 
 function tokensMatch(a: string, b: string): boolean {
   const left = Buffer.from(a)
@@ -72,7 +72,9 @@ export default handler(
     let error = meaning.note ?? null
     try {
       if (meaning.robotExternalId && meaning.patch) {
-        await applyRobotPatch(adapter.id, meaning.robotExternalId, meaning.patch, { last_seen_at: now })
+        await persistRobots(adapter.id, [{ external_id: meaning.robotExternalId, ...meaning.patch }], {
+          last_seen_at: now,
+        })
       }
     } catch (err) {
       console.error(err)

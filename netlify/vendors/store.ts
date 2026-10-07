@@ -1,9 +1,10 @@
 // Persistence shared by all vendors: configs, stores, robots and the event log.
 
 import { randomBytes } from 'node:crypto'
-import type { VendorStatus } from '../../src/types/api'
+import type { VendorStatus, WorkState } from '../../src/types/api'
 import { db } from '../lib/supabaseAdmin'
-import type { RobotPatch, SyncData, VendorAdapter, VendorConfigRow, VendorContext } from './types'
+import { resolveWorkState } from './robotState'
+import type { RobotPatch, SyncData, SyncedRobot, VendorAdapter, VendorConfigRow, VendorContext } from './types'
 
 export const EVENT_RETENTION_DAYS = 30
 const MAX_STORED_BODY = 256 * 1024
@@ -76,10 +77,32 @@ export async function persistSync(vendor: string, data: SyncData): Promise<void>
       )
     if (error) throw error
   }
+  await persistRobots(vendor, data.robots)
+}
+
+/**
+ * Save robot updates, keeping the work-state badge consistent with online status
+ * (see resolveWorkState). Used by sync, refresh and callbacks.
+ */
+export async function persistRobots(
+  vendor: string,
+  robots: SyncedRobot[],
+  extra: { last_seen_at?: string; last_refreshed_at?: string } = {},
+): Promise<void> {
+  if (!robots.length) return
+  const { data, error } = await db()
+    .from('robots')
+    .select('external_id, work_state')
+    .eq('vendor', vendor)
+    .in('external_id', robots.map((r) => r.external_id))
+  if (error) throw error
+  const previous = new Map((data as { external_id: string; work_state: WorkState }[]).map((r) => [r.external_id, r.work_state]))
+
   // One upsert per robot: rows carry different field sets, and a batch upsert
   // would null out the fields a row doesn't mention.
-  for (const { external_id, ...patch } of data.robots) {
-    await applyRobotPatch(vendor, external_id, patch)
+  for (const { external_id, ...patch } of robots) {
+    const workState = resolveWorkState(previous.get(external_id), patch)
+    await applyRobotPatch(vendor, external_id, workState ? { ...patch, work_state: workState } : patch, extra)
   }
 }
 

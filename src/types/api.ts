@@ -172,6 +172,8 @@ export interface RobotVendorInfo {
     refresh: boolean
     refresh_cooldown_ms: number
   }
+  /** Most recent vendor-level Refresh of these robots (drives the cooldown). */
+  last_refreshed_at: string | null
 }
 
 export interface RobotGroup {

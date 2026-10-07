@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import { Badge, Button, ErrorBox, FullPageSpinner, cx, errorMessage, type BadgeTone } from '../components/ui'
 import { VendorStatusBadge } from '../components/vendors/common'
-import { useRefreshRobot, useRobots } from '../hooks/useRobots'
+import { useRefreshVendorRobots, useRobots } from '../hooks/useRobots'
 import { ApiError } from '../lib/api'
 import { formatDateTime, timeAgo } from '../lib/format'
 import { refreshWaitSeconds } from '../lib/robotRefresh'
@@ -134,31 +134,32 @@ function VendorSection({
   onToggle: () => void
 }) {
   const { vendor, robots } = group
-  const refresh = useRefreshRobot()
+  const refresh = useRefreshVendorRobots()
   const [refreshError, setRefreshError] = useState<string | null>(null)
-  // Server-reported cooldowns (e.g. another session refreshed the robot), as epoch ms.
-  const [blockedUntil, setBlockedUntil] = useState<Record<string, number>>({})
+  // Server-reported cooldown (e.g. another session just refreshed this vendor), as epoch ms.
+  const [blockedUntil, setBlockedUntil] = useState(0)
   const online = robots.filter((r) => r.online === true).length
   const RobotDetail = VENDOR_UI[vendor.id]?.RobotDetail
+  const cooldownSeconds = vendor.capabilities.refresh_cooldown_ms / 1000
+  const waitSeconds = Math.max(
+    refreshWaitSeconds(vendor.last_refreshed_at, vendor.capabilities.refresh_cooldown_ms, now),
+    Math.ceil((blockedUntil - now) / 1000),
+    0,
+  )
 
-  function onRefresh(robot: Robot) {
+  function onRefresh() {
     setRefreshError(null)
-    refresh.mutate(robot.id, {
+    refresh.mutate(vendor.id, {
       onError: (e) => {
         if (e instanceof ApiError && e.status === 429) {
           // Not a failure: show the countdown instead of an error.
-          const seconds = Number(/(\d+) s/.exec(e.message)?.[1] ?? vendor.capabilities.refresh_cooldown_ms / 1000)
-          setBlockedUntil((b) => ({ ...b, [robot.id]: Date.now() + seconds * 1000 }))
+          const seconds = Number(/(\d+) s/.exec(e.message)?.[1] ?? cooldownSeconds)
+          setBlockedUntil(Date.now() + seconds * 1000)
         } else {
           setRefreshError(errorMessage(e))
         }
       },
     })
-  }
-
-  function waitFor(robot: Robot): number {
-    const local = Math.ceil(((blockedUntil[robot.id] ?? 0) - now) / 1000)
-    return Math.max(refreshWaitSeconds(robot.last_refreshed_at, vendor.capabilities.refresh_cooldown_ms, now), local, 0)
   }
 
   return (
@@ -179,11 +180,29 @@ function VendorSection({
           {robots.length} robot{robots.length === 1 ? '' : 's'} · {online} online
         </span>
         <VendorStatusBadge status={vendor.status} />
-        {isAdmin && (
-          <Link to={`/vendors/${vendor.id}`} className="ml-auto text-sm text-blue-600 hover:underline">
-            Configure
-          </Link>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          {vendor.capabilities.refresh && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={refresh.isPending || waitSeconds > 0}
+              onClick={onRefresh}
+              title={
+                waitSeconds > 0
+                  ? `${vendor.name} robots can be refreshed once every ${cooldownSeconds} s to respect the vendor's rate limits`
+                  : `Ask ${vendor.name} for the current status of all these robots`
+              }
+              className="whitespace-nowrap tabular-nums"
+            >
+              {refresh.isPending ? 'Refreshing…' : waitSeconds > 0 ? `Refresh in ${waitSeconds} s` : 'Refresh'}
+            </Button>
+          )}
+          {isAdmin && (
+            <Link to={`/vendors/${vendor.id}`} className="text-sm text-blue-600 hover:underline">
+              Configure
+            </Link>
+          )}
+        </div>
       </header>
 
       {!collapsed && (
@@ -203,26 +222,11 @@ function VendorSection({
                   <th className="px-4 py-2.5 font-medium">Battery</th>
                   <th className="px-4 py-2.5 font-medium">Current task</th>
                   <th className="px-4 py-2.5 font-medium">Last seen</th>
-                  <th className="px-4 py-2.5" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {robots.map((robot) => (
-                  <RobotRow
-                    key={robot.id}
-                    robot={robot}
-                    Detail={RobotDetail}
-                    refresh={
-                      vendor.capabilities.refresh
-                        ? {
-                            busy: refresh.isPending && refresh.variables === robot.id,
-                            waitSeconds: waitFor(robot),
-                            cooldownSeconds: vendor.capabilities.refresh_cooldown_ms / 1000,
-                            run: () => onRefresh(robot),
-                          }
-                        : null
-                    }
-                  />
+                  <RobotRow key={robot.id} robot={robot} Detail={RobotDetail} />
                 ))}
               </tbody>
             </table>
@@ -233,23 +237,7 @@ function VendorSection({
   )
 }
 
-interface RefreshControl {
-  busy: boolean
-  waitSeconds: number
-  cooldownSeconds: number
-  run: () => void
-}
-
-function RobotRow({
-  robot,
-  Detail,
-  refresh,
-}: {
-  robot: Robot
-  Detail?: ComponentType<{ robot: Robot }>
-  /** null when the vendor doesn't support on-demand refresh. */
-  refresh: RefreshControl | null
-}) {
+function RobotRow({ robot, Detail }: { robot: Robot; Detail?: ComponentType<{ robot: Robot }> }) {
   const state = WORK_STATE[robot.work_state] ?? WORK_STATE.unknown
   return (
     <tr className="align-top">
@@ -284,24 +272,6 @@ function RobotRow({
       </td>
       <td className="whitespace-nowrap px-4 py-3 text-slate-600" title={formatDateTime(robot.last_seen_at)}>
         {timeAgo(robot.last_seen_at)}
-      </td>
-      <td className="px-4 py-3 text-right">
-        {refresh && (
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={refresh.busy || refresh.waitSeconds > 0}
-            onClick={refresh.run}
-            title={
-              refresh.waitSeconds > 0
-                ? `Each robot can be refreshed once every ${refresh.cooldownSeconds} s to respect the vendor's rate limits`
-                : 'Ask the vendor for live status'
-            }
-            className="whitespace-nowrap tabular-nums"
-          >
-            {refresh.busy ? 'Refreshing…' : refresh.waitSeconds > 0 ? `Refresh in ${refresh.waitSeconds} s` : 'Refresh'}
-          </Button>
-        )}
       </td>
     </tr>
   )

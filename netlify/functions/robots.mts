@@ -1,13 +1,12 @@
 import type { Config } from '@netlify/functions'
-import { z } from 'zod'
 import { refreshWaitSeconds } from '../../src/lib/robotRefresh'
 import type { Robot, RobotVendorInfo, RobotsResponse } from '../../src/types/api'
 import { HttpError, handler, json, methodNotAllowed, requireUser } from '../lib/http'
 import { db } from '../lib/supabaseAdmin'
 import { VendorApiError } from '../vendors/errors'
-import { findAdapter } from '../vendors/index'
+import { findAdapter, getAdapter } from '../vendors/index'
 import { groupRobots, unknownVendorInfo } from '../vendors/robotGroups'
-import { applyRobotPatch, contextFor, loadConfig, vendorStatus } from '../vendors/store'
+import { contextFor, loadConfig, persistRobots, vendorStatus } from '../vendors/store'
 import type { VendorConfigRow } from '../vendors/types'
 
 type RobotRow = Omit<Robot, 'store_name'>
@@ -47,6 +46,7 @@ async function listRobots(): Promise<Response> {
         refresh: adapter.robotCapabilities.refresh,
         refresh_cooldown_ms: adapter.robotCapabilities.refreshCooldownMs,
       },
+      last_refreshed_at: null, // filled in by groupRobots
     }
   }
 
@@ -59,18 +59,21 @@ async function listRobots(): Promise<Response> {
   return json(body)
 }
 
-async function refreshRobot(id: string): Promise<Response> {
-  if (!z.uuid().safeParse(id).success) throw new HttpError(404, 'Robot not found')
-  const { data: robot, error } = await db().from('robots').select('*').eq('id', id).maybeSingle()
+/** Refresh the status of all of one vendor's robots from the vendor's cloud. */
+async function refreshVendor(vendorId: string): Promise<Response> {
+  const adapter = getAdapter(vendorId)
+  if (!adapter.robotCapabilities.refresh) throw new HttpError(400, `Refresh isn't supported for ${adapter.name}.`)
+
+  // Cooldown is per vendor: measured from the newest refresh of any of its robots.
+  const { data: last, error } = await db()
+    .from('robots')
+    .select('last_refreshed_at')
+    .eq('vendor', adapter.id)
+    .not('last_refreshed_at', 'is', null)
+    .order('last_refreshed_at', { ascending: false })
+    .limit(1)
   if (error) throw error
-  if (!robot) throw new HttpError(404, 'Robot not found')
-  const row = robot as RobotRow
-
-  const adapter = findAdapter(row.vendor)
-  if (!adapter?.robotCapabilities.refresh) throw new HttpError(400, "Refresh isn't supported for this vendor.")
-
-  // The page shows a countdown; this guards against other sessions and direct calls.
-  const wait = refreshWaitSeconds(row.last_refreshed_at, adapter.robotCapabilities.refreshCooldownMs)
+  const wait = refreshWaitSeconds(last?.[0]?.last_refreshed_at ?? null, adapter.robotCapabilities.refreshCooldownMs)
   if (wait > 0) throw new HttpError(429, `Refreshed recently. Try again in ${wait} s.`)
 
   const config = await loadConfig(adapter.id)
@@ -78,30 +81,33 @@ async function refreshRobot(id: string): Promise<Response> {
     throw new HttpError(400, `The ${adapter.name} integration is not configured.`)
   }
 
-  let patch
+  let robots
   try {
-    patch = await adapter.fetchRobotStatus(contextFor(config), row.external_id)
+    robots = await adapter.refreshRobots(contextFor(config))
   } catch (err) {
     if (err instanceof VendorApiError) throw new HttpError(502, err.message)
     throw err
   }
-  await applyRobotPatch(row.vendor, row.external_id, patch, { last_refreshed_at: new Date().toISOString() })
-
-  const { data: updated, error: readError } = await db().from('robots').select('*').eq('id', id).single()
-  if (readError) throw readError
-  return json(withStore(updated as RobotRow, await storeNames()))
+  await persistRobots(adapter.id, robots, { last_refreshed_at: new Date().toISOString() })
+  return json({ robots: robots.length })
 }
 
-export default handler(async (req, params) => {
+export default handler(async (req) => {
   await requireUser(req)
-  if (!params.id) {
+  // Parse the path ourselves: after a 404, `netlify dev` retries variants such as
+  // `/api/robots/vendors/x/refresh.html` without route params.
+  const [, , section, vendorId, action, ...rest] = new URL(req.url).pathname.split('/').filter(Boolean)
+  if (!section) {
     if (req.method !== 'GET') methodNotAllowed()
     return listRobots()
   }
+  if (section !== 'vendors' || !vendorId || action !== 'refresh' || rest.length) {
+    throw new HttpError(404, 'Not found')
+  }
   if (req.method !== 'POST') methodNotAllowed()
-  return refreshRobot(params.id)
+  return refreshVendor(vendorId)
 })
 
 export const config: Config = {
-  path: ['/api/robots', '/api/robots/:id/refresh'],
+  path: ['/api/robots', '/api/robots/vendors/:vendor/refresh'],
 }

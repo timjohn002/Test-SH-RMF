@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import type { Robot, RobotsResponse } from '../types/api'
+import type { RobotsResponse } from '../types/api'
 
 const ROBOTS_KEY = ['robots']
 
@@ -13,19 +13,12 @@ export function useRobots() {
   })
 }
 
-export function useRefreshRobot() {
+/** Ask one vendor's cloud for the current status of all its robots. */
+export function useRefreshVendorRobots() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => api<Robot>(`/api/robots/${id}/refresh`, { method: 'POST' }),
-    onSuccess: (robot) =>
-      queryClient.setQueryData<RobotsResponse>(ROBOTS_KEY, (data) =>
-        data && {
-          groups: data.groups.map((g) =>
-            g.vendor.id === robot.vendor
-              ? { ...g, robots: g.robots.map((r) => (r.id === robot.id ? robot : r)) }
-              : g,
-          ),
-        },
-      ),
+    mutationFn: (vendorId: string) =>
+      api<{ robots: number }>(`/api/robots/vendors/${vendorId}/refresh`, { method: 'POST' }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ROBOTS_KEY }),
   })
 }

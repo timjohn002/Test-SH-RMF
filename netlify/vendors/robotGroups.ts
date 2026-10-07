@@ -18,8 +18,18 @@ export function groupRobots(robots: Robot[], vendorInfo: (vendorId: string) => R
   }
   const label = (r: Robot) => r.name ?? r.external_id
   return [...groups.values()]
-    .map((g) => ({ ...g, robots: [...g.robots].sort((a, b) => byName.compare(label(a), label(b))) }))
+    .map((g) => ({
+      vendor: { ...g.vendor, last_refreshed_at: latest(g.robots.map((r) => r.last_refreshed_at)) },
+      robots: [...g.robots].sort((a, b) => byName.compare(label(a), label(b))),
+    }))
     .sort((a, b) => byName.compare(a.vendor.name, b.vendor.name))
+}
+
+/** Latest ISO timestamp, or null. */
+function latest(times: (string | null)[]): string | null {
+  let best: string | null = null
+  for (const t of times) if (t && (!best || Date.parse(t) > Date.parse(best))) best = t
+  return best
 }
 
 /** Vendor info for a robot whose vendor isn't in the code registry (e.g. a removed integration). */
@@ -29,5 +39,6 @@ export function unknownVendorInfo(vendorId: string): RobotVendorInfo {
     name: vendorId,
     status: 'not_configured',
     capabilities: { refresh: false, refresh_cooldown_ms: 0 },
+    last_refreshed_at: null,
   }
 }

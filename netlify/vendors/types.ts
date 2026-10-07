@@ -77,15 +77,16 @@ export interface VendorAdapter {
   credentialSettings: readonly string[]
   /** What the Robots page may do with this vendor's robots. */
   robotCapabilities: {
-    /** On-demand live status pull (`fetchRobotStatus`). */
+    /** Vendor-level on-demand status pull (`refreshRobots`). */
     refresh: boolean
-    /** Minimum gap between refreshes of one robot (vendor rate limits). */
+    /** Minimum gap between refreshes of this vendor's robots (vendor rate limits). */
     refreshCooldownMs: number
   }
 
   testConnection(ctx: VendorContext): Promise<VendorTestResult>
   fetchSyncData(ctx: VendorContext): Promise<SyncData>
-  fetchRobotStatus(ctx: VendorContext, externalId: string): Promise<RobotPatch>
+  /** Current status of all of this vendor's robots in scope (Robots page "Refresh"). */
+  refreshRobots(ctx: VendorContext): Promise<SyncedRobot[]>
 
   verifyWebhook(config: VendorConfigRow, rawBody: string, headers: Headers): SignatureCheck
   requireSignature(config: VendorConfigRow): boolean
