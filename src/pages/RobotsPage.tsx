@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import { Badge, Button, ErrorBox, FullPageSpinner, cx, errorMessage, type BadgeTone } from '../components/ui'
 import { useRefreshRobot, useRobots } from '../hooks/useRobots'
+import { ApiError } from '../lib/api'
 import { formatDateTime, timeAgo } from '../lib/format'
+import { refreshWaitSeconds } from '../lib/robotRefresh'
 import type { Robot, RobotTask, WorkState } from '../types/api'
 
 const WORK_STATE: Record<WorkState, { tone: BadgeTone; label: string }> = {
@@ -28,11 +30,45 @@ const TASK_TONE: Record<string, BadgeTone> = {
   arrived: 'green',
 }
 
+/** Current time, re-rendering every second (drives the Refresh countdowns). */
+function useNow(intervalMs = 1000): number {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(timer)
+  }, [intervalMs])
+  return now
+}
+
 export function RobotsPage() {
   const { user } = useAuth()
-  const { data: robots, isPending, error, dataUpdatedAt } = useRobots()
+  const { data: robots, isPending, error, dataUpdatedAt, refetch } = useRobots()
   const refresh = useRefreshRobot()
   const [refreshError, setRefreshError] = useState<string | null>(null)
+  // Server-reported cooldowns (e.g. another session refreshed the robot), as epoch ms.
+  const [blockedUntil, setBlockedUntil] = useState<Record<string, number>>({})
+  const now = useNow()
+
+  function onRefresh(robot: Robot) {
+    setRefreshError(null)
+    refresh.mutate(robot.id, {
+      onError: (e) => {
+        if (e instanceof ApiError && e.status === 429) {
+          // Not a failure: show the countdown instead of an error.
+          const seconds = Number(/(\d+) s/.exec(e.message)?.[1] ?? 10)
+          setBlockedUntil((b) => ({ ...b, [robot.id]: Date.now() + seconds * 1000 }))
+          void refetch()
+        } else {
+          setRefreshError(errorMessage(e))
+        }
+      },
+    })
+  }
+
+  function waitFor(robot: Robot): number {
+    const local = Math.ceil(((blockedUntil[robot.id] ?? 0) - now) / 1000)
+    return Math.max(refreshWaitSeconds(robot.last_refreshed_at, now), local, 0)
+  }
 
   if (isPending) return <FullPageSpinner />
 
@@ -84,10 +120,8 @@ export function RobotsPage() {
                     key={robot.id}
                     robot={robot}
                     refreshing={refresh.isPending && refresh.variables === robot.id}
-                    onRefresh={() => {
-                      setRefreshError(null)
-                      refresh.mutate(robot.id, { onError: (e) => setRefreshError(errorMessage(e)) })
-                    }}
+                    waitSeconds={waitFor(robot)}
+                    onRefresh={() => onRefresh(robot)}
                   />
                 ))}
               </tbody>
@@ -99,7 +133,17 @@ export function RobotsPage() {
   )
 }
 
-function RobotRow({ robot, refreshing, onRefresh }: { robot: Robot; refreshing: boolean; onRefresh: () => void }) {
+function RobotRow({
+  robot,
+  refreshing,
+  waitSeconds,
+  onRefresh,
+}: {
+  robot: Robot
+  refreshing: boolean
+  waitSeconds: number
+  onRefresh: () => void
+}) {
   const state = WORK_STATE[robot.work_state] ?? WORK_STATE.unknown
   return (
     <tr className="align-top">
@@ -138,8 +182,19 @@ function RobotRow({ robot, refreshing, onRefresh }: { robot: Robot; refreshing: 
         {timeAgo(robot.last_seen_at)}
       </td>
       <td className="px-4 py-3 text-right">
-        <Button size="sm" variant="ghost" disabled={refreshing} onClick={onRefresh} title="Ask the vendor for live status">
-          {refreshing ? 'Refreshing…' : 'Refresh'}
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={refreshing || waitSeconds > 0}
+          onClick={onRefresh}
+          title={
+            waitSeconds > 0
+              ? "Each robot can be refreshed once every 10 s to respect the vendor's rate limits"
+              : 'Ask the vendor for live status'
+          }
+          className="whitespace-nowrap tabular-nums"
+        >
+          {refreshing ? 'Refreshing…' : waitSeconds > 0 ? `Refresh in ${waitSeconds} s` : 'Refresh'}
         </Button>
       </td>
     </tr>

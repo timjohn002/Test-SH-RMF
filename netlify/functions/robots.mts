@@ -1,14 +1,12 @@
 import type { Config } from '@netlify/functions'
 import { z } from 'zod'
+import { refreshWaitSeconds } from '../../src/lib/robotRefresh'
 import type { Robot } from '../../src/types/api'
 import { HttpError, handler, json, methodNotAllowed, requireUser } from '../lib/http'
 import { db } from '../lib/supabaseAdmin'
 import { VendorApiError } from '../vendors/errors'
 import { findAdapter } from '../vendors/index'
 import { applyRobotPatch, contextFor, loadConfig } from '../vendors/store'
-
-/** Minimum gap between on-demand status pulls for one robot (vendor rate limits). */
-const REFRESH_COOLDOWN_MS = 30_000
 
 type RobotRow = Omit<Robot, 'store_name'>
 
@@ -41,10 +39,9 @@ async function refreshRobot(id: string): Promise<Response> {
   if (!robot) throw new HttpError(404, 'Robot not found')
   const row = robot as RobotRow
 
-  if (row.last_refreshed_at) {
-    const wait = REFRESH_COOLDOWN_MS - (Date.now() - Date.parse(row.last_refreshed_at))
-    if (wait > 0) throw new HttpError(429, `Refreshed recently. Try again in ${Math.ceil(wait / 1000)} s.`)
-  }
+  // The page shows a countdown; this guards against other sessions and direct calls.
+  const wait = refreshWaitSeconds(row.last_refreshed_at)
+  if (wait > 0) throw new HttpError(429, `Refreshed recently. Try again in ${wait} s.`)
 
   const adapter = findAdapter(row.vendor)
   const config = adapter ? await loadConfig(adapter.id) : null
