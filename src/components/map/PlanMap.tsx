@@ -4,6 +4,14 @@ import { ImageOverlay, MapContainer, useMap, useMapEvents } from 'react-leaflet'
 import { formatMeters, latLngToPixel, planBounds, pixelToWorld, type PlanCalibration, type Point } from '../../lib/coords'
 import { cx } from '../ui'
 
+/** Extra details about a click on the plan. */
+export interface PlanClickInfo {
+  /** Screen pixels per plan image pixel at the current zoom (CRS.Simple: 2^zoom). */
+  screenPxPerImagePx: number
+  /** Alt/Option held while clicking. */
+  altKey: boolean
+}
+
 interface PlanMapProps {
   /** Remount the map when this changes (e.g. a different floor). */
   mapKey: string
@@ -12,7 +20,7 @@ interface PlanMapProps {
   heightPx: number
   calibration: PlanCalibration
   /** When set, clicks on the plan are reported in pixel coordinates and the cursor becomes a crosshair. */
-  onPlanClick?: (p: Point) => void
+  onPlanClick?: (p: Point, info: PlanClickInfo) => void
   /** Show pixel coordinates next to world coordinates in the cursor readout. */
   showPixels?: boolean
   children?: ReactNode
@@ -95,7 +103,7 @@ function MapBehavior({
 }: {
   bounds: L.LatLngBounds
   onCursor: (p: Point | null) => void
-  onPlanClick?: (p: Point) => void
+  onPlanClick?: (p: Point, info: PlanClickInfo) => void
 }) {
   const map = useMap()
 
@@ -114,7 +122,11 @@ function MapBehavior({
   useMapEvents({
     mousemove: (e) => onCursor(latLngToPixel(e.latlng.lat, e.latlng.lng)),
     mouseout: () => onCursor(null),
-    click: (e) => onPlanClick?.(latLngToPixel(e.latlng.lat, e.latlng.lng)),
+    click: (e) =>
+      onPlanClick?.(latLngToPixel(e.latlng.lat, e.latlng.lng), {
+        screenPxPerImagePx: 2 ** map.getZoom(),
+        altKey: e.originalEvent.altKey,
+      }),
   })
   return null
 }

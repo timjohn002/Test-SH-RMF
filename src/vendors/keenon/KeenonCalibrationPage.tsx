@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { CircleMarker, Polyline, Tooltip } from 'react-leaflet'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { PlanMap } from '../../components/map/PlanMap'
+import { PlanMap, type PlanClickInfo } from '../../components/map/PlanMap'
 import { RotatedImageOverlay } from '../../components/map/RotatedImageOverlay'
 import { Badge, Button, Card, ErrorBox, FullPageSpinner, cx, errorMessage, type BadgeTone } from '../../components/ui'
 import { useFloors } from '../../hooks/useFloors'
@@ -18,12 +18,12 @@ import {
   type PlanTransform,
 } from './calibration'
 import { keenonMapCalibration, mapPixelToMeters } from './mapGeometry'
+import { SNAP_MODE_LABEL, snapToNamedPoint, type SnapMode } from './snapping'
 import type { KeenonRobotFloor, KeenonRobotMapsDetail } from './shared'
 import { useClearCalibration, useKeenonRobotMaps, useLocateRobot, useSaveCalibration } from './useKeenonMaps'
 
-/** Snap a Keenon-map click to a named point within this many image pixels. */
-const SNAP_PX = 10
 const SCALE_WARNING = 0.05
+const SNAP_MODE_KEY = 'keenon.calibration.snapMode'
 
 const PAIR_COLOR = '#ea580c'
 
@@ -68,6 +68,34 @@ export function KeenonCalibrationPage() {
   )
 }
 
+/** Snap setting, remembered per browser (best effort). */
+function useSnapMode(): [SnapMode, (mode: SnapMode) => void] {
+  const [mode, setMode] = useState<SnapMode>(() => {
+    try {
+      const stored = localStorage.getItem(SNAP_MODE_KEY)
+      return stored === 'off' || stored === 'close' || stored === 'normal' ? stored : 'close'
+    } catch {
+      return 'close'
+    }
+  })
+  function update(next: SnapMode) {
+    setMode(next)
+    try {
+      localStorage.setItem(SNAP_MODE_KEY, next)
+    } catch {
+      // Storage unavailable: keep it for this visit only.
+    }
+  }
+  return [mode, update]
+}
+
+/** The robot side of a pair being placed: possibly snapped, with the exact click kept for undo. */
+interface RobotPick {
+  point: Point
+  name: string | null
+  exact: Point
+}
+
 function savedTransform(floor: KeenonRobotFloor): PlanTransform | null {
   const { calib_scale_px_per_m: scale, calib_rotation_rad: rotation, calib_origin_x_px: ox, calib_origin_y_px: oy } = floor
   return scale !== null && rotation !== null && ox !== null && oy !== null
@@ -95,8 +123,11 @@ function CalibrationEditor({
   const [pairs, setPairs] = useState<CalibrationPair[]>(floor.calib_pairs ?? [])
   // Hand-tuned transform; null = use the fit. Starts as the saved one (which may be hand-tuned).
   const [manual, setManual] = useState<PlanTransform | null>(savedTransform(floor))
-  const [pendingRobot, setPendingRobot] = useState<{ point: Point; name: string | null } | null>(null)
+  const [pendingRobot, setPendingRobot] = useState<RobotPick | null>(null)
   const [pendingPlan, setPendingPlan] = useState<Point | null>(null)
+  // The last completed pair, if its robot side was snapped (so it can be switched to the exact click).
+  const [lastSnap, setLastSnap] = useState<{ index: number; pick: RobotPick } | null>(null)
+  const [snapMode, setSnapMode] = useSnapMode()
   const [overlay, setOverlay] = useState(true)
   const [opacity, setOpacity] = useState(0.5)
   const [saved, setSaved] = useState(false)
@@ -125,29 +156,42 @@ function CalibrationEditor({
     setPairs(next)
     setManual(null) // the fit takes over again
     setSaved(false)
+    setLastSnap(null)
   }
 
-  function addPair(robot: { point: Point; name: string | null }, plan: Point) {
+  function addPair(robot: RobotPick, plan: Point) {
     updatePairs([...pairs, { robot: robot.point, plan, point_name: robot.name }])
+    setLastSnap(robot.name ? { index: pairs.length, pick: robot } : null)
     setPendingRobot(null)
     setPendingPlan(null)
   }
 
-  function onKeenonClick(imagePx: Point) {
-    // Snap to the nearest named point, if close enough.
-    let best: { point: Point; name: string | null } = { point: pixelToWorld(imagePx, keenonCal), name: null }
-    let bestDist = SNAP_PX
-    for (const p of floor.points) {
-      const metres = mapPixelToMeters(keenonFrame, { x: p.x_px, y: p.y_px })
-      const img = worldToPixel(metres, keenonCal)
-      const d = Math.hypot(img.x - imagePx.x, img.y - imagePx.y)
-      if (d < bestDist) {
-        bestDist = d
-        best = { point: metres, name: p.name }
-      }
+  /** Switch a snapped pick (pending or the last pair) to the exact click position. */
+  function switchToExactClick() {
+    if (pendingRobot?.name) {
+      setPendingRobot({ ...pendingRobot, point: pendingRobot.exact, name: null })
+    } else if (lastSnap) {
+      const { index, pick } = lastSnap
+      updatePairs(pairs.map((p, i) => (i === index ? { ...p, robot: pick.exact, point_name: null } : p)))
     }
-    if (pendingPlan) addPair(best, pendingPlan)
-    else setPendingRobot(best)
+  }
+
+  const namedPoints = useMemo(
+    () =>
+      floor.points.map((p) => {
+        const metres = mapPixelToMeters(keenonFrame, { x: p.x_px, y: p.y_px })
+        return { name: p.name, metres, image: worldToPixel(metres, keenonCal) }
+      }),
+    [floor.points, keenonCal], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+
+  function onKeenonClick(imagePx: Point, info: PlanClickInfo) {
+    const exact = pixelToWorld(imagePx, keenonCal)
+    // Snap radius is in screen pixels, so it feels the same at every zoom; Alt-click never snaps.
+    const snapped = snapToNamedPoint(imagePx, namedPoints, { mode: snapMode, ...info })
+    const pick: RobotPick = snapped ? { point: snapped.metres, name: snapped.name, exact } : { point: exact, name: null, exact }
+    if (pendingPlan) addPair(pick, pendingPlan)
+    else setPendingRobot(pick)
   }
 
   function onPlanClick(planPx: Point) {
@@ -187,26 +231,56 @@ function CalibrationEditor({
             {floor.floor_label ? ` (${floor.floor_label})` : ''} → {appFloor.name}
           </h1>
           <p className="text-sm text-slate-500">
-            Pair the same physical spots on both maps. Clicking near a Keenon named point snaps to it.
+            Pair the same physical spots on both maps. Clicks near a Keenon named point snap to it (adjustable below).
             {floor.calibrated_at && ` Last saved ${formatDateTime(floor.calibrated_at)}.`}
           </p>
         </div>
         {floor.calibration_stale && <Badge tone="amber">Keenon's map changed since the saved calibration</Badge>}
       </div>
 
-      <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
-        <strong>Step:</strong> {step}
-        {(pendingRobot || pendingPlan) && (
-          <button
-            type="button"
-            className="ml-3 text-xs underline"
-            onClick={() => {
-              setPendingRobot(null)
-              setPendingPlan(null)
-            }}
-          >
-            Cancel this pair
-          </button>
+      <div className="space-y-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>
+            <strong>Step:</strong> {step}
+          </span>
+          {(pendingRobot || pendingPlan) && (
+            <button
+              type="button"
+              className="text-xs underline"
+              onClick={() => {
+                setPendingRobot(null)
+                setPendingPlan(null)
+              }}
+            >
+              Cancel this pair
+            </button>
+          )}
+          <label className="ml-auto flex items-center gap-1.5 text-xs">
+            Snap to named points
+            <select
+              value={snapMode}
+              onChange={(e) => setSnapMode(e.target.value as SnapMode)}
+              className="rounded border border-blue-300 bg-white px-1.5 py-0.5 text-xs"
+            >
+              {(Object.keys(SNAP_MODE_LABEL) as SnapMode[]).map((m) => (
+                <option key={m} value={m}>
+                  {SNAP_MODE_LABEL[m]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {(pendingRobot?.name || lastSnap) && (
+          <div className="text-xs">
+            Snapped to <strong>{pendingRobot?.name ?? lastSnap?.pick.name}</strong>
+            {lastSnap && !pendingRobot?.name && ` (pair ${lastSnap.index + 1})`}.{' '}
+            <button type="button" className="underline" onClick={switchToExactClick}>
+              Use exact click instead
+            </button>
+          </div>
+        )}
+        {snapMode !== 'off' && (
+          <div className="text-xs text-blue-800/80">Tip: hold Alt (Option on Mac) while clicking to place exactly, without snapping.</div>
         )}
       </div>
 
@@ -238,7 +312,12 @@ function CalibrationEditor({
               {pairs.map((pair, i) => (
                 <PairMarker key={`kp-${i}`} at={pixelToLatLng(worldToPixel(pair.robot, keenonCal))} n={i + 1} />
               ))}
-              {pendingRobot && <PendingMarker at={pixelToLatLng(worldToPixel(pendingRobot.point, keenonCal))} />}
+              {pendingRobot && (
+                <PendingMarker
+                  at={pixelToLatLng(worldToPixel(pendingRobot.point, keenonCal))}
+                  label={pendingRobot.name ? `Snapped to ${pendingRobot.name}` : undefined}
+                />
+              )}
               {robotPos && <RobotMarker at={pixelToLatLng(worldToPixel(robotPos, keenonCal))} />}
             </PlanMap>
           </div>
@@ -480,14 +559,20 @@ function PairMarker({ at, n }: { at: [number, number]; n: number }) {
   )
 }
 
-function PendingMarker({ at }: { at: [number, number] }) {
+function PendingMarker({ at, label }: { at: [number, number]; label?: string }) {
   return (
     <CircleMarker
       center={at}
       radius={7}
       interactive={false}
       pathOptions={{ color: PAIR_COLOR, weight: 2, dashArray: '3 3', fillOpacity: 0 }}
-    />
+    >
+      {label && (
+        <Tooltip direction="bottom" offset={[0, 8]} permanent>
+          {label}
+        </Tooltip>
+      )}
+    </CircleMarker>
   )
 }
 
