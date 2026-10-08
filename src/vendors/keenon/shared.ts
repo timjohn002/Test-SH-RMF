@@ -110,8 +110,10 @@ export interface KeenonRobotMapSummary {
 export interface KeenonRobotMapsDetail {
   robot: KeenonRobotMapSummary
   position: RobotPosition | null
-  /** Floors of the robot's current scene first; other scenes after. */
+  /** Floors of the robot's current scene. */
   floors: KeenonRobotFloor[]
+  /** Floors still stored from a previous scene (deleted at the next discovery). */
+  other_scene_floors: number
 }
 
 export interface KeenonScene {

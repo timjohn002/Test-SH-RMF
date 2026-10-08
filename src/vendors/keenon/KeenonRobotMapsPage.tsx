@@ -128,6 +128,15 @@ function SceneControl({ detail }: { detail: KeenonRobotMapsDetail }) {
 
   function choose(code: string) {
     const scene = scenes.data?.find((s) => s.code === code)
+    const keyed = detail.floors.filter((f) => f.app_floor_id || f.calibrated_at).length
+    if (
+      keyed > 0 &&
+      !confirm(
+        "Changing the scene will remove this scene's floors, matches and calibrations at the next discovery. Continue?",
+      )
+    ) {
+      return
+    }
     setScene.mutate(
       { scene_code: code || null, scene_name: scene?.name ?? null },
       { onSuccess: () => setEditing(false) },
@@ -185,34 +194,25 @@ function SceneControl({ detail }: { detail: KeenonRobotMapsDetail }) {
 
 function Floors({ detail }: { detail: KeenonRobotMapsDetail }) {
   const { data: appFloors } = useFloors()
-  const sceneCode = detail.robot.scene.code
-  const current = detail.floors.filter((f) => f.scene_code === sceneCode)
-  const others = detail.floors.filter((f) => f.scene_code !== sceneCode)
-
-  if (detail.floors.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
-        No floors discovered yet. Click <strong>Discover floors</strong> above.
-      </div>
-    )
-  }
+  const { scene } = detail.robot
 
   return (
     <div className="space-y-4">
-      {current.map((floor) => (
-        <FloorCard key={floor.id} floor={floor} detail={detail} appFloors={appFloors ?? []} />
-      ))}
-      {others.length > 0 && (
-        <details className="rounded-lg border border-slate-200 bg-white p-4">
-          <summary className="cursor-pointer text-sm font-medium text-slate-700">
-            {others.length} floor{others.length === 1 ? '' : 's'} from other scenes this robot used before
-          </summary>
-          <div className="mt-4 space-y-4">
-            {others.map((floor) => (
-              <FloorCard key={floor.id} floor={floor} detail={detail} appFloors={appFloors ?? []} />
-            ))}
-          </div>
-        </details>
+      {detail.other_scene_floors > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Scene changed to <strong>{scene.name ?? scene.code}</strong>. Run <strong>Discover floors</strong> to load its
+          maps; the previous scene's {detail.other_scene_floors} floor{detail.other_scene_floors === 1 ? '' : 's'} (and
+          any matches and calibrations) will be removed.
+        </div>
+      )}
+      {detail.floors.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
+          No floors discovered for this scene yet. Click <strong>Discover floors</strong> above.
+        </div>
+      ) : (
+        detail.floors.map((floor) => (
+          <FloorCard key={floor.id} floor={floor} detail={detail} appFloors={appFloors ?? []} />
+        ))
       )}
     </div>
   )

@@ -165,14 +165,15 @@ async function robotDetail(robotId: string): Promise<KeenonRobotMapsDetail> {
     .order('scene_code')
     .order('floor')
   if (error) throw error
-  const floors = (data as FloorRow[]).map(withCalibrationState)
+  const all = (data as FloorRow[]).map(withCalibrationState)
   const sceneCode = currentScene(scene).code
-  // Current scene's floors first; floors of previously used scenes after.
-  floors.sort((a, b) => Number(b.scene_code === sceneCode) - Number(a.scene_code === sceneCode))
+  // Only the current scene's floors are shown; other scenes' floors are deleted at the next discovery.
+  const floors = all.filter((f) => f.scene_code === sceneCode)
   return {
-    robot: summarize(robot, scene, floors, await storeNames()),
+    robot: summarize(robot, scene, all, await storeNames()),
     position: robot.position,
     floors,
+    other_scene_floors: all.length - floors.length,
   }
 }
 
@@ -215,6 +216,14 @@ async function discover(robotId: string): Promise<Response> {
       )
     if (error) throw error
   }
+
+  // The scene is now confirmed: drop floors (and their matches/calibrations) of any other scene.
+  const { error: cleanupError } = await db()
+    .from('keenon_robot_floors')
+    .delete()
+    .eq('robot_id', robot.id)
+    .neq('scene_code', result.scene.code)
+  if (cleanupError) throw cleanupError
 
   if (result.position) {
     const { error } = await db().from('robots').update({ position: result.position }).eq('id', robot.id)
