@@ -73,6 +73,16 @@ export interface KeenonRobotFloor {
   last_seen_at: string
   app_floor_id: string | null
   matched_at: string | null
+  /** Calibration to the matched app floor plan (null = not calibrated). See calibration.ts. */
+  calib_scale_px_per_m: number | null
+  calib_rotation_rad: number | null
+  calib_origin_x_px: number | null
+  calib_origin_y_px: number | null
+  calib_pairs: { robot: { x: number; y: number }; plan: { x: number; y: number }; point_name?: string | null }[] | null
+  calib_rms_m: number | null
+  calibrated_at: string | null
+  /** Keenon's map changed (image or point versions) since the calibration was made. */
+  calibration_stale: boolean
 }
 
 export interface KeenonSceneInfo {

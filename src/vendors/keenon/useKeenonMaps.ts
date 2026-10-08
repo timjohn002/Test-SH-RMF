@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
+import type { RobotPosition } from '../../types/api'
+import type { CalibrationPair } from './calibration'
 import type { KeenonRobotFloor, KeenonRobotMapSummary, KeenonRobotMapsDetail, KeenonScene } from './shared'
 
 const ROBOTS_KEY = ['keenon-maps', 'robots']
@@ -48,6 +50,50 @@ export function useStoreScenes(storeId: string | null, enabled: boolean) {
     enabled: enabled && !!storeId,
     staleTime: 5 * 60_000,
     retry: false,
+  })
+}
+
+/** Replace one floor in the cached robot detail (and refresh the summary list). */
+function useFloorMutation<V>(robotId: string, fn: (vars: V) => Promise<KeenonRobotFloor>) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (floor) => {
+      queryClient.setQueryData<KeenonRobotMapsDetail>(detailKey(robotId), (detail) =>
+        detail && { ...detail, floors: detail.floors.map((f) => (f.id === floor.id ? floor : f)) },
+      )
+      queryClient.invalidateQueries({ queryKey: ROBOTS_KEY })
+    },
+  })
+}
+
+export interface CalibrationInput {
+  scale: number
+  rotation: number
+  origin_x: number
+  origin_y: number
+  pairs: CalibrationPair[]
+}
+
+export function useSaveCalibration(robotId: string) {
+  return useFloorMutation<{ floorId: string; calibration: CalibrationInput }>(robotId, ({ floorId, calibration }) =>
+    api<KeenonRobotFloor>(`/api/keenon/robot-floors/${floorId}/calibration`, { method: 'PUT', body: calibration }),
+  )
+}
+
+export function useClearCalibration(robotId: string) {
+  return useFloorMutation<string>(robotId, (floorId) =>
+    api<KeenonRobotFloor>(`/api/keenon/robot-floors/${floorId}/calibration`, { method: 'DELETE' }),
+  )
+}
+
+/** Ask Keenon where the robot is now (whitelisted network only); updates the cached detail. */
+export function useLocateRobot(robotId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api<RobotPosition>(`/api/keenon/robots/${robotId}/locate`, { method: 'POST' }),
+    onSuccess: (position) =>
+      queryClient.setQueryData<KeenonRobotMapsDetail>(detailKey(robotId), (detail) => detail && { ...detail, position }),
   })
 }
 

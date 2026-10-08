@@ -1,4 +1,5 @@
 import type { Config } from '@netlify/functions'
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { RobotPosition } from '../../src/types/api'
 import type {
@@ -7,12 +8,13 @@ import type {
   KeenonRobotMapsDetail,
   KeenonScene,
 } from '../../src/vendors/keenon/shared'
+import { fitTransform, pairErrors, type CalibrationPair, type PlanTransform } from '../../src/vendors/keenon/calibration'
 import { HttpError, handler, json, methodNotAllowed, parseBody, requireAdmin } from '../lib/http'
 import { db } from '../lib/supabaseAdmin'
 import { VendorApiError } from '../vendors/errors'
 import { keenonAdapter, keenonClientFor } from '../vendors/keenon/adapter'
-import { getScenes } from '../vendors/keenon/api'
-import { discoverRobotMaps } from '../vendors/keenon/mapDiscovery'
+import { getRobotLocation, getScenes } from '../vendors/keenon/api'
+import { discoverRobotMaps, locationToPosition } from '../vendors/keenon/mapDiscovery'
 import { contextFor, loadConfig } from '../vendors/store'
 
 // Keenon-only: which floors (maps) each Keenon robot knows, and which app floor each matches.
@@ -38,6 +40,33 @@ interface SceneRow {
 
 const ROBOT_COLUMNS = 'id, external_id, name, model, store_external_id, position'
 const FLOOR_SUMMARY_COLUMNS = 'robot_id, scene_code, app_floor_id'
+
+const CLEARED_CALIBRATION = {
+  calib_scale_px_per_m: null,
+  calib_rotation_rad: null,
+  calib_origin_x_px: null,
+  calib_origin_y_px: null,
+  calib_pairs: null,
+  calib_rms_m: null,
+  calib_map_hash: null,
+  calibrated_at: null,
+}
+
+type FloorRow = Omit<KeenonRobotFloor, 'calibration_stale'> & { calib_map_hash: string | null }
+
+/** Fingerprint of the Keenon map a calibration was made against (image + point map versions). */
+function mapHash(row: Pick<FloorRow, 'map_png' | 'map_versions'>): string {
+  return createHash('sha256')
+    .update(row.map_png ?? '')
+    .update('|')
+    .update([...(row.map_versions ?? [])].sort().join(','))
+    .digest('hex')
+}
+
+function withCalibrationState(row: FloorRow): KeenonRobotFloor {
+  const { calib_map_hash, ...floor } = row
+  return { ...floor, calibration_stale: !!row.calibrated_at && calib_map_hash !== mapHash(row) }
+}
 
 async function keenonClient() {
   const config = await loadConfig(keenonAdapter.id)
@@ -136,7 +165,7 @@ async function robotDetail(robotId: string): Promise<KeenonRobotMapsDetail> {
     .order('scene_code')
     .order('floor')
   if (error) throw error
-  const floors = data as KeenonRobotFloor[]
+  const floors = (data as FloorRow[]).map(withCalibrationState)
   const sceneCode = currentScene(scene).code
   // Current scene's floors first; floors of previously used scenes after.
   floors.sort((a, b) => Number(b.scene_code === sceneCode) - Number(a.scene_code === sceneCode))
@@ -229,15 +258,105 @@ async function matchFloor(floorRowId: string, req: Request): Promise<Response> {
     if (error) throw error
     if (!data) throw new HttpError(400, 'That app floor no longer exists')
   }
+  const current = await loadFloorRow(floorRowId)
+  const changed = current.app_floor_id !== app_floor_id
   const { data, error } = await db()
     .from('keenon_robot_floors')
-    .update({ app_floor_id, matched_at: app_floor_id ? new Date().toISOString() : null })
+    .update({
+      app_floor_id,
+      matched_at: app_floor_id ? new Date().toISOString() : null,
+      // A calibration belongs to one app floor plan; matching another invalidates it.
+      ...(changed ? CLEARED_CALIBRATION : {}),
+    })
     .eq('id', floorRowId)
     .select('*')
-    .maybeSingle()
+    .single()
+  if (error) throw error
+  return json(withCalibrationState(data as FloorRow))
+}
+
+async function loadFloorRow(floorRowId: string): Promise<FloorRow> {
+  if (!z.uuid().safeParse(floorRowId).success) throw new HttpError(404, 'Floor not found')
+  const { data, error } = await db().from('keenon_robot_floors').select('*').eq('id', floorRowId).maybeSingle()
   if (error) throw error
   if (!data) throw new HttpError(404, 'Floor not found')
-  return json(data as KeenonRobotFloor)
+  return data as FloorRow
+}
+
+const pointSchema = z.object({ x: z.number().finite(), y: z.number().finite() })
+const calibrationSchema = z.object({
+  scale: z.number().finite().positive(),
+  rotation: z.number().finite(),
+  origin_x: z.number().finite(),
+  origin_y: z.number().finite(),
+  pairs: z
+    .array(z.object({ robot: pointSchema, plan: pointSchema, point_name: z.string().max(200).nullable().optional() }))
+    .min(2, 'At least 2 point pairs are needed')
+    .max(50),
+})
+
+async function saveCalibration(floorRowId: string, req: Request): Promise<Response> {
+  const row = await loadFloorRow(floorRowId)
+  if (!row.app_floor_id) throw new HttpError(400, 'Match this floor to an app floor before calibrating.')
+  if (!row.map_png) throw new HttpError(400, 'This floor has no Keenon map image to calibrate against.')
+  const input = await parseBody(req, calibrationSchema)
+  const pairs: CalibrationPair[] = input.pairs
+
+  // The pairs must define a transform on their own; the saved transform may be hand-tuned.
+  try {
+    fitTransform(pairs)
+  } catch (err) {
+    throw new HttpError(400, err instanceof Error ? err.message : 'Invalid point pairs')
+  }
+  const transform: PlanTransform = {
+    scale: input.scale,
+    rotation: input.rotation,
+    origin_x: input.origin_x,
+    origin_y: input.origin_y,
+  }
+  const { rms_m } = pairErrors(transform, pairs)
+
+  const { data, error } = await db()
+    .from('keenon_robot_floors')
+    .update({
+      calib_scale_px_per_m: transform.scale,
+      calib_rotation_rad: transform.rotation,
+      calib_origin_x_px: transform.origin_x,
+      calib_origin_y_px: transform.origin_y,
+      calib_pairs: pairs,
+      calib_rms_m: rms_m,
+      calib_map_hash: mapHash(row),
+      calibrated_at: new Date().toISOString(),
+    })
+    .eq('id', floorRowId)
+    .select('*')
+    .single()
+  if (error) throw error
+  return json(withCalibrationState(data as FloorRow))
+}
+
+async function clearCalibration(floorRowId: string): Promise<Response> {
+  await loadFloorRow(floorRowId)
+  const { data, error } = await db()
+    .from('keenon_robot_floors')
+    .update(CLEARED_CALIBRATION)
+    .eq('id', floorRowId)
+    .select('*')
+    .single()
+  if (error) throw error
+  return json(withCalibrationState(data as FloorRow))
+}
+
+/** Just the robot's current position (much cheaper than full discovery). */
+async function locate(robotId: string): Promise<Response> {
+  const robot = await loadRobot(robotId)
+  const client = await keenonClient()
+  const location = await callKeenon(() => getRobotLocation(client, robot.external_id))
+  if (!location) throw new HttpError(502, 'Keenon did not report a position for this robot.')
+  const position = locationToPosition(location)
+  const { error } = await db().from('robots').update({ position }).eq('id', robot.id)
+  if (error) throw error
+  return json(position)
 }
 
 export default handler(async (req) => {
@@ -261,6 +380,9 @@ export default handler(async (req) => {
       case 'scene':
         if (req.method !== 'PUT') methodNotAllowed()
         return setScene(id, req)
+      case 'locate':
+        if (req.method !== 'POST') methodNotAllowed()
+        return locate(id)
     }
   }
   if (section === 'stores' && id && action === 'scenes') {
@@ -271,6 +393,11 @@ export default handler(async (req) => {
     if (req.method !== 'PUT') methodNotAllowed()
     return matchFloor(id, req)
   }
+  if (section === 'robot-floors' && id && action === 'calibration') {
+    if (req.method === 'PUT') return saveCalibration(id, req)
+    if (req.method === 'DELETE') return clearCalibration(id)
+    methodNotAllowed()
+  }
   throw new HttpError(404, 'Not found')
 })
 
@@ -280,5 +407,6 @@ export const config: Config = {
     '/api/keenon/robots/:id/:action',
     '/api/keenon/stores/:id/scenes',
     '/api/keenon/robot-floors/:id',
+    '/api/keenon/robot-floors/:id/:action',
   ],
 }

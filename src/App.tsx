@@ -7,6 +7,7 @@ import { RobotsPage } from './pages/RobotsPage'
 import { SetupPage } from './pages/SetupPage'
 import { UsersPage } from './pages/UsersPage'
 import { VendorConfigPage, VendorsPage } from './pages/VendorsPage'
+import { KeenonCalibrationPage } from './vendors/keenon/KeenonCalibrationPage'
 import { KeenonRobotMapsPage } from './vendors/keenon/KeenonRobotMapsPage'
 
 export default function App() {
@@ -28,6 +29,14 @@ export default function App() {
           element={
             <RequireAdmin>
               <VendorsPage />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="vendors/keenon/robots/:robotId/floors/:floorId/calibrate"
+          element={
+            <RequireAdmin>
+              <KeenonCalibrationPage />
             </RequireAdmin>
           }
         />

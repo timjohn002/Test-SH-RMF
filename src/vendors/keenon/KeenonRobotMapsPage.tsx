@@ -257,6 +257,15 @@ function FloorCard({
         <>
           {stale && <Badge tone="amber">Not found in last discovery</Badge>}
           {floor.app_floor_id ? <Badge tone="green">Matched</Badge> : <Badge tone="slate">Not matched</Badge>}
+          {floor.app_floor_id && <CalibrationBadge floor={floor} />}
+          {floor.app_floor_id && floor.map_png && (
+            <Link
+              to={`/vendors/keenon/robots/${detail.robot.robot_id}/floors/${floor.id}/calibrate`}
+              className="rounded-md bg-blue-600 px-2.5 py-1 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              {floor.calibrated_at ? 'Re-calibrate' : 'Calibrate'}
+            </Link>
+          )}
         </>
       }
     >
@@ -280,7 +289,16 @@ function FloorCard({
             label="Matches app floor"
             value={floor.app_floor_id ?? ''}
             disabled={match.isPending}
-            onChange={(e) => match.mutate({ floorId: floor.id, appFloorId: e.target.value || null })}
+            onChange={(e) => {
+              const appFloorId = e.target.value || null
+              if (
+                floor.calibrated_at &&
+                !confirm('This floor is calibrated against the current app floor. Changing the match removes the calibration. Continue?')
+              ) {
+                return
+              }
+              match.mutate({ floorId: floor.id, appFloorId })
+            }}
             options={[
               { value: '', label: 'Not matched' },
               ...appFloors.map((f) => ({ value: f.id, label: `Level ${f.level} · ${f.name}` })),
@@ -306,6 +324,18 @@ function FloorCard({
         </details>
       )}
     </Card>
+  )
+}
+
+function CalibrationBadge({ floor }: { floor: KeenonRobotFloor }) {
+  if (!floor.calibrated_at) return <Badge tone="slate">Not calibrated</Badge>
+  if (floor.calibration_stale) return <Badge tone="amber">Map changed: re-check calibration</Badge>
+  return (
+    <Badge tone="green">
+      Calibrated{floor.calib_rms_m !== null && floor.calib_pairs && floor.calib_pairs.length >= 3
+        ? ` (±${formatMeters(floor.calib_rms_m)})`
+        : ''}
+    </Badge>
   )
 }
 
