@@ -23,7 +23,8 @@ function settingsOf(config: VendorConfigRow): KeenonSettings {
   return settingsSchema.parse(config.settings)
 }
 
-function clientFor(ctx: VendorContext): KeenonClient {
+/** Keenon API client for the saved configuration (shares the cached token). */
+export function keenonClientFor(ctx: VendorContext): KeenonClient {
   const settings = settingsOf(ctx.config)
   const baseUrl = keenonBaseUrl(settings)
   const clientSecret = ctx.config.secrets.client_secret
@@ -93,7 +94,7 @@ export const keenonAdapter: VendorAdapter = {
   },
 
   async testConnection(ctx) {
-    const client = clientFor(ctx)
+    const client = keenonClientFor(ctx)
     await client.getToken(true)
     const stores = await getStores(client)
     return {
@@ -103,7 +104,7 @@ export const keenonAdapter: VendorAdapter = {
   },
 
   async fetchSyncData(ctx) {
-    const client = clientFor(ctx)
+    const client = keenonClientFor(ctx)
     const { store_ids } = settingsOf(ctx.config)
     const stores = await getStores(client)
     const selected = store_ids.length ? stores.filter((s) => store_ids.includes(s.storeId)) : stores
@@ -126,7 +127,7 @@ export const keenonAdapter: VendorAdapter = {
   },
 
   async refreshRobots(ctx) {
-    const client = clientFor(ctx)
+    const client = keenonClientFor(ctx)
     const { store_ids } = settingsOf(ctx.config)
     // Selected stores, or every store of the account (one extra call) when none are selected.
     const storeIds = store_ids.length ? store_ids : (await getStores(client)).map((s) => s.storeId)

@@ -100,11 +100,15 @@ export class KeenonClient {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
 
-    const envelope = (data ?? {}) as { code?: number; msg?: string; data?: unknown }
-    if (envelope.code === 610401 && !retried) return this.call<T>(method, path, { query, body }, true)
-    if (envelope.code !== KEENON_OK) {
-      if (typeof envelope.code === 'number') {
-        throw new KeenonError(envelope.code, keenonCodeMessage(envelope.code, envelope.msg), status)
+    const envelope = (data ?? {}) as { code?: number | string; msg?: string; data?: unknown; status?: number }
+    // Keenon sometimes sends `code` as a string (e.g. "610500").
+    const code = envelope.code === undefined || envelope.code === '' ? null : Number(envelope.code)
+    if (code === 610401 && !retried) return this.call<T>(method, path, { query, body }, true)
+    // Most endpoints answer 610000; some (e.g. robot location) answer {code: 200, status: 0}.
+    const ok = code === KEENON_OK || (code === 200 && (envelope.status === undefined || envelope.status === 0))
+    if (!ok) {
+      if (code !== null && Number.isFinite(code)) {
+        throw new KeenonError(code, keenonCodeMessage(code, envelope.msg), status)
       }
       throw new KeenonError(null, `Unexpected response from Keenon (HTTP ${status})`, status)
     }

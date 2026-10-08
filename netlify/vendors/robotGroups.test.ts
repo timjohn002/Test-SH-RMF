@@ -20,6 +20,7 @@ function robot(vendor: string, external_id: string, name: string | null = null):
     can_be_called: null,
     current_task: null,
     vendor_status: null,
+    position: null,
     last_seen_at: null,
     last_refreshed_at: null,
     updated_at: '2026-10-07T00:00:00Z',

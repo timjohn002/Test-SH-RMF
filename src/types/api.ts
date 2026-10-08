@@ -141,6 +141,17 @@ export interface RobotTask {
   updated_at: string
 }
 
+/** Last known robot position in the robot's own map frame (metres). */
+export interface RobotPosition {
+  /** Vendor floor label, e.g. "2". */
+  floor: string | null
+  x: number
+  y: number
+  heading_rad: number | null
+  reported_at: string | null
+  source: string
+}
+
 export interface Robot {
   id: string
   vendor: string
@@ -158,6 +169,7 @@ export interface Robot {
   can_be_called: boolean | null
   current_task: RobotTask | null
   vendor_status: Record<string, unknown> | null
+  position: RobotPosition | null
   last_seen_at: string | null
   last_refreshed_at: string | null
   updated_at: string

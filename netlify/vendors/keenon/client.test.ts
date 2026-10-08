@@ -92,6 +92,21 @@ describe('KeenonClient', () => {
     await expect(client(failing).getToken()).rejects.toThrow(/Could not reach Keenon at https:\/\/keenon.test/)
   })
 
+  it('accepts the {code:200, status:0} reply format (robot location)', async () => {
+    const { fetchImpl } = mockFetch([
+      TOKEN,
+      { body: { traceId: 'x', msg: 'success', code: 200, data: { floor: '2' }, status: 0 } },
+    ])
+    expect(await client(fetchImpl).get('/api/open/custom/robot/location')).toEqual({ floor: '2' })
+  })
+
+  it('handles string error codes', async () => {
+    const { fetchImpl } = mockFetch([TOKEN, { body: { msg: '未知异常', code: '610500', status: 1 } }])
+    const err = (await client(fetchImpl).get('/x').catch((e: unknown) => e)) as KeenonError
+    expect(err.code).toBe(610500)
+    expect(err.message).toMatch(/Keenon server error/)
+  })
+
   it('adds query parameters', async () => {
     const { fetchImpl, calls } = mockFetch([TOKEN, { body: { code: 610000, data: [] } }])
     await client(fetchImpl).get('/api/open/data/v1/store/robot/list', { storeId: 'S 1', skip: undefined })

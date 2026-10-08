@@ -21,6 +21,7 @@ import {
 } from '../../hooks/useVendors'
 import { formatDateTime, formatDuration, timeAgo } from '../../lib/format'
 import type { VendorConfigView } from '../../types/api'
+import { KeenonRobotMapsCard } from './KeenonRobotMapsCard'
 import { KEENON_GRANT_TYPE, KEENON_REGIONS, type KeenonRegion, type KeenonSettings } from './shared'
 
 type Config = VendorConfigView<KeenonSettings>
@@ -57,6 +58,7 @@ export function KeenonConfig({ vendorId }: { vendorId: string }) {
 
       <ConnectionCard config={config} />
       <StoresCard config={config} />
+      <KeenonRobotMapsCard />
       <CallbacksCard config={config} />
       <Card title="Callback log" description="Every callback Keenon sends, kept for 30 days. Click a row to see the payload.">
         <VendorEventLog vendorId={config.id} />
