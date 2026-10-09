@@ -13,9 +13,10 @@ import {
   errorMessage,
 } from '../../components/ui'
 import { useFloors } from '../../hooks/useFloors'
-import { formatMeters, pixelToLatLng, worldToPixel } from '../../lib/coords'
+import { formatMeters, pixelToLatLng, worldToPixel, type Point } from '../../lib/coords'
 import { formatDateTime, timeAgo } from '../../lib/format'
-import type { Floor, RobotPosition } from '../../types/api'
+import type { Floor } from '../../types/api'
+import { alignedRobot, floorAlignment } from './floorTransforms'
 import { keenonMapCalibration, mapPixelToMeters } from './mapGeometry'
 import { KEENON_MAP_RESOLUTION, type KeenonRobotFloor, type KeenonRobotMapsDetail } from './shared'
 import {
@@ -231,10 +232,13 @@ function FloorCard({
   const appFloor = appFloors.find((f) => f.id === floor.app_floor_id) ?? null
   const discoveredAt = detail.robot.discovered_at
   const stale = !!discoveredAt && Date.parse(floor.last_seen_at) < Date.parse(discoveredAt) - 60_000
-  const robotHere =
+  const rawHere =
     detail.position && floor.scene_code === detail.robot.scene.code && detail.position.floor === String(floor.floor)
       ? detail.position
       : null
+  // Reported positions aren't in the map's frame; only draw the robot once the floor is aligned.
+  const alignment = floorAlignment(floor)
+  const robotHere = rawHere && alignment ? alignedRobot(alignment, rawHere).point : null
   // Keenon sometimes returns the same image for several floors of a scene.
   const sameImageAs = floor.map_png
     ? detail.floors
@@ -256,6 +260,15 @@ function FloorCard({
       actions={
         <>
           {stale && <Badge tone="amber">Not found in last discovery</Badge>}
+          <AlignmentBadge floor={floor} />
+          {floor.map_png && (
+            <Link
+              to={`/vendors/keenon/robots/${detail.robot.robot_id}/floors/${floor.id}/align`}
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              {floor.aligned_at ? 'Re-align position' : 'Align position'}
+            </Link>
+          )}
           {floor.app_floor_id ? <Badge tone="green">Matched</Badge> : <Badge tone="slate">Not matched</Badge>}
           {floor.app_floor_id && <CalibrationBadge floor={floor} />}
           {floor.app_floor_id && floor.map_png && (
@@ -280,8 +293,9 @@ function FloorCard({
           )}
           <KeenonFloorMap floor={floor} robot={robotHere} />
           <p className="mt-1 text-xs text-slate-500">
-            Coordinates are in the robot's frame (metres). Blue dots are Keenon's named points
+            Coordinates are in Keenon's map frame (metres). Blue dots are Keenon's named points
             {robotHere ? '; the red dot is the robot' : ''}.
+            {rawHere && !alignment && ' Align the robot position to show where the robot is.'}
           </p>
         </div>
         <div>
@@ -327,6 +341,18 @@ function FloorCard({
   )
 }
 
+function AlignmentBadge({ floor }: { floor: KeenonRobotFloor }) {
+  if (!floor.aligned_at) return <Badge tone="slate">Position not aligned</Badge>
+  return (
+    <span title="The offset changes when the robot restarts or relocalizes: re-check with Track robot if positions look off.">
+      <Badge tone="green">
+        Position aligned{floor.align_rms_m !== null ? ` (±${formatMeters(floor.align_rms_m)})` : ''},{' '}
+        {timeAgo(floor.aligned_at)}
+      </Badge>
+    </span>
+  )
+}
+
 function CalibrationBadge({ floor }: { floor: KeenonRobotFloor }) {
   if (!floor.calibrated_at) return <Badge tone="slate">Not calibrated</Badge>
   if (floor.calibration_stale) return <Badge tone="amber">Map changed: re-check calibration</Badge>
@@ -339,7 +365,7 @@ function CalibrationBadge({ floor }: { floor: KeenonRobotFloor }) {
   )
 }
 
-function KeenonFloorMap({ floor, robot }: { floor: KeenonRobotFloor; robot: RobotPosition | null }) {
+function KeenonFloorMap({ floor, robot }: { floor: KeenonRobotFloor; robot: Point | null }) {
   const { map_png, map_width, map_height, origin_x_m, origin_y_m } = floor
   if (!map_png || !map_width || !map_height || origin_x_m === null || origin_y_m === null) {
     return (

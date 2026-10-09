@@ -8,6 +8,7 @@ import type {
   KeenonRobotMapsDetail,
   KeenonScene,
 } from '../../src/vendors/keenon/shared'
+import { sampleErrors, type PositionAlignment } from '../../src/vendors/keenon/alignment'
 import { fitTransform, pairErrors, type CalibrationPair, type PlanTransform } from '../../src/vendors/keenon/calibration'
 import { HttpError, handler, json, methodNotAllowed, parseBody, requireAdmin } from '../lib/http'
 import { db } from '../lib/supabaseAdmin'
@@ -39,6 +40,7 @@ interface SceneRow {
 }
 
 const ROBOT_COLUMNS = 'id, external_id, name, model, store_external_id, position'
+const LOCATE_INTERVAL_MS = 2_500
 const FLOOR_SUMMARY_COLUMNS = 'robot_id, scene_code, app_floor_id'
 
 const CLEARED_CALIBRATION = {
@@ -356,13 +358,74 @@ async function clearCalibration(floorRowId: string): Promise<Response> {
   return json(withCalibrationState(data as FloorRow))
 }
 
+const alignmentSchema = z.object({
+  rotation: z.number().finite(),
+  offset_x: z.number().finite(),
+  offset_y: z.number().finite(),
+  mirror: z.boolean(),
+  samples: z.array(z.object({ reported: pointSchema, map: pointSchema })).max(50).default([]),
+})
+
+async function saveAlignment(floorRowId: string, req: Request): Promise<Response> {
+  await loadFloorRow(floorRowId)
+  const input = await parseBody(req, alignmentSchema)
+  const alignment: PositionAlignment = {
+    rotation: input.rotation,
+    offset_x: input.offset_x,
+    offset_y: input.offset_y,
+    mirror: input.mirror,
+  }
+  const rms = input.samples.length ? sampleErrors(alignment, input.samples).rms_m : null
+  const { data, error } = await db()
+    .from('keenon_robot_floors')
+    .update({
+      align_rotation_rad: alignment.rotation,
+      align_offset_x_m: alignment.offset_x,
+      align_offset_y_m: alignment.offset_y,
+      align_mirror: alignment.mirror,
+      align_samples: input.samples,
+      align_rms_m: rms,
+      aligned_at: new Date().toISOString(),
+    })
+    .eq('id', floorRowId)
+    .select('*')
+    .single()
+  if (error) throw error
+  return json(withCalibrationState(data as FloorRow))
+}
+
+async function clearAlignment(floorRowId: string): Promise<Response> {
+  await loadFloorRow(floorRowId)
+  const { data, error } = await db()
+    .from('keenon_robot_floors')
+    .update({
+      align_rotation_rad: null,
+      align_offset_x_m: null,
+      align_offset_y_m: null,
+      align_mirror: null,
+      align_samples: null,
+      align_rms_m: null,
+      aligned_at: null,
+    })
+    .eq('id', floorRowId)
+    .select('*')
+    .single()
+  if (error) throw error
+  return json(withCalibrationState(data as FloorRow))
+}
+
 /** Just the robot's current position (much cheaper than full discovery). */
 async function locate(robotId: string): Promise<Response> {
   const robot = await loadRobot(robotId)
+  // Keenon recommends ~3 s between status queries; "Track robot" polls at that rate.
+  const lastFetch = robot.position?.fetched_at ? Date.parse(robot.position.fetched_at) : 0
+  const wait = LOCATE_INTERVAL_MS - (Date.now() - lastFetch)
+  if (wait > 0) throw new HttpError(429, `Located recently. Try again in ${Math.ceil(wait / 1000)} s.`)
+
   const client = await keenonClient()
   const location = await callKeenon(() => getRobotLocation(client, robot.external_id))
   if (!location) throw new HttpError(502, 'Keenon did not report a position for this robot.')
-  const position = locationToPosition(location)
+  const position = { ...locationToPosition(location), fetched_at: new Date().toISOString() }
   const { error } = await db().from('robots').update({ position }).eq('id', robot.id)
   if (error) throw error
   return json(position)
@@ -405,6 +468,11 @@ export default handler(async (req) => {
   if (section === 'robot-floors' && id && action === 'calibration') {
     if (req.method === 'PUT') return saveCalibration(id, req)
     if (req.method === 'DELETE') return clearCalibration(id)
+    methodNotAllowed()
+  }
+  if (section === 'robot-floors' && id && action === 'alignment') {
+    if (req.method === 'PUT') return saveAlignment(id, req)
+    if (req.method === 'DELETE') return clearAlignment(id)
     methodNotAllowed()
   }
   throw new HttpError(404, 'Not found')

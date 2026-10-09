@@ -150,6 +150,8 @@ export interface RobotPosition {
   heading_rad: number | null
   reported_at: string | null
   source: string
+  /** When this app last asked the vendor (vs. `reported_at`: when the robot last reported). */
+  fetched_at?: string | null
 }
 
 export interface Robot {

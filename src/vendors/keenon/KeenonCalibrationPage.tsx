@@ -7,7 +7,7 @@ import { Badge, Button, Card, ErrorBox, FullPageSpinner, cx, errorMessage, type 
 import { useFloors } from '../../hooks/useFloors'
 import { formatMeters, pixelToLatLng, pixelToWorld, worldToPixel, type Point } from '../../lib/coords'
 import { formatDateTime } from '../../lib/format'
-import type { Floor, RobotPosition } from '../../types/api'
+import type { Floor } from '../../types/api'
 import {
   fitTransform,
   headingOnPlan,
@@ -17,6 +17,7 @@ import {
   type CalibrationPair,
   type PlanTransform,
 } from './calibration'
+import { alignedRobot, floorAlignment, type AlignedRobot } from './floorTransforms'
 import { keenonMapCalibration, mapPixelToMeters } from './mapGeometry'
 import { SNAP_MODE_LABEL, snapToNamedPoint, type SnapMode } from './snapping'
 import type { KeenonRobotFloor, KeenonRobotMapsDetail } from './shared'
@@ -147,10 +148,13 @@ function CalibrationEditor({
   const transform = manual ?? fit?.result?.transform ?? null
   const quality = transform && pairs.length >= 2 ? pairErrors(transform, pairs) : null
   const deviation = transform ? scaleDeviation(transform, appFloor.scale_m_per_px) : null
-  const robotPos =
+  const rawRobot =
     detail.position && floor.scene_code === detail.robot.scene.code && detail.position.floor === String(floor.floor)
       ? detail.position
       : null
+  // Reported positions are in their own frame; the floor's position alignment maps them onto Keenon's map.
+  const alignment = floorAlignment(floor)
+  const robotPos = rawRobot && alignment ? alignedRobot(alignment, rawRobot) : null
 
   function updatePairs(next: CalibrationPair[]) {
     setPairs(next)
@@ -318,7 +322,7 @@ function CalibrationEditor({
                   label={pendingRobot.name ? `Snapped to ${pendingRobot.name}` : undefined}
                 />
               )}
-              {robotPos && <RobotMarker at={pixelToLatLng(worldToPixel(robotPos, keenonCal))} />}
+              {robotPos && <RobotMarker at={pixelToLatLng(worldToPixel(robotPos.point, keenonCal))} />}
             </PlanMap>
           </div>
         </div>
@@ -366,7 +370,7 @@ function CalibrationEditor({
                 <PairOnPlan key={`ap-${i}`} pair={pair} n={i + 1} transform={transform} />
               ))}
               {pendingPlan && <PendingMarker at={pixelToLatLng(pendingPlan)} />}
-              {robotPos && transform && <RobotOnPlan position={robotPos} transform={transform} />}
+              {robotPos && transform && <RobotOnPlan robot={robotPos} transform={transform} />}
             </PlanMap>
           </div>
         </div>
@@ -487,10 +491,20 @@ function CalibrationEditor({
           <Button variant="secondary" disabled={locate.isPending} onClick={() => locate.mutate()}>
             {locate.isPending ? 'Locating…' : 'Locate robot'}
           </Button>
-          {robotPos ? (
+          {robotPos && rawRobot ? (
             <span className="text-slate-600">
-              Robot at {formatMeters(robotPos.x)}, {formatMeters(robotPos.y)} (red dot), reported{' '}
-              {formatDateTime(robotPos.reported_at)}.
+              Robot at {formatMeters(robotPos.point.x)}, {formatMeters(robotPos.point.y)} on Keenon's map (red dot),
+              reported {formatDateTime(rawRobot.reported_at)}.
+            </span>
+          ) : rawRobot ? (
+            <span className="text-slate-500">
+              Align the robot position to show where the robot is.{' '}
+              <Link
+                to={`/vendors/keenon/robots/${detail.robot.robot_id}/floors/${floor.id}/align`}
+                className="font-medium text-blue-700 hover:underline"
+              >
+                Align position
+              </Link>
             </span>
           ) : (
             <span className="text-slate-500">The robot's last position isn't on this Keenon floor.</span>
@@ -616,12 +630,13 @@ function RobotMarker({ at }: { at: [number, number] }) {
   )
 }
 
-function RobotOnPlan({ position, transform }: { position: RobotPosition; transform: PlanTransform }) {
-  const at = robotToPlan(transform, position)
+function RobotOnPlan({ robot, transform }: { robot: AlignedRobot; transform: PlanTransform }) {
+  const at = robotToPlan(transform, robot.point)
+  const heading = robot.heading
   const arrow =
-    position.heading_rad !== null
+    heading !== null
       ? (() => {
-          const h = headingOnPlan(transform, position.heading_rad)
+          const h = headingOnPlan(transform, heading)
           // 0.6 robot metres long, in plan pixels (y down).
           const len = 0.6 * transform.scale
           return { x: at.x + len * Math.cos(h), y: at.y - len * Math.sin(h) }

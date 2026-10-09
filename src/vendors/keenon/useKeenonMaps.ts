@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import type { RobotPosition } from '../../types/api'
+import type { AlignmentSample } from './alignment'
 import type { CalibrationPair } from './calibration'
 import type { KeenonRobotFloor, KeenonRobotMapSummary, KeenonRobotMapsDetail, KeenonScene } from './shared'
 
@@ -84,6 +85,26 @@ export function useSaveCalibration(robotId: string) {
 export function useClearCalibration(robotId: string) {
   return useFloorMutation<string>(robotId, (floorId) =>
     api<KeenonRobotFloor>(`/api/keenon/robot-floors/${floorId}/calibration`, { method: 'DELETE' }),
+  )
+}
+
+export interface AlignmentInput {
+  rotation: number
+  offset_x: number
+  offset_y: number
+  mirror: boolean
+  samples: AlignmentSample[]
+}
+
+export function useSaveAlignment(robotId: string) {
+  return useFloorMutation<{ floorId: string; alignment: AlignmentInput }>(robotId, ({ floorId, alignment }) =>
+    api<KeenonRobotFloor>(`/api/keenon/robot-floors/${floorId}/alignment`, { method: 'PUT', body: alignment }),
+  )
+}
+
+export function useClearAlignment(robotId: string) {
+  return useFloorMutation<string>(robotId, (floorId) =>
+    api<KeenonRobotFloor>(`/api/keenon/robot-floors/${floorId}/alignment`, { method: 'DELETE' }),
   )
 }
 

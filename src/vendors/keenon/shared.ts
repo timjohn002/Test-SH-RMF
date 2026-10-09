@@ -83,6 +83,14 @@ export interface KeenonRobotFloor {
   calibrated_at: string | null
   /** Keenon's map changed (image or point versions) since the calibration was made. */
   calibration_stale: boolean
+  /** Reported position → Keenon map frame (null = not aligned). See alignment.ts. */
+  align_rotation_rad: number | null
+  align_offset_x_m: number | null
+  align_offset_y_m: number | null
+  align_mirror: boolean | null
+  align_samples: { reported: { x: number; y: number }; map: { x: number; y: number } }[] | null
+  align_rms_m: number | null
+  aligned_at: string | null
 }
 
 export interface KeenonSceneInfo {
