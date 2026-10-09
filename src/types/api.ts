@@ -198,3 +198,42 @@ export interface RobotGroup {
 export interface RobotsResponse {
   groups: RobotGroup[]
 }
+
+// ---------------------------------------------------------------------------
+// Map page: robots placed on app floors (any vendor)
+// ---------------------------------------------------------------------------
+
+export interface MapRobot {
+  id: string
+  vendor: string
+  vendor_name: string
+  name: string | null
+  model: string | null
+  /** App floor the robot is on. */
+  floor_id: string
+  /** App floor-plan pixels. */
+  x_px: number
+  y_px: number
+  /** Radians on the plan (counter-clockwise from +x, y up); not drawn yet. */
+  heading_rad: number | null
+  /** When the app last got this position from the vendor. */
+  position_at: string | null
+  /** Offline, or no fresh position for a while: drawn faded. */
+  stale: boolean
+}
+
+/** A robot that can't be drawn, and why (shown to admins). */
+export interface MapRobotNotShown {
+  id: string
+  vendor: string
+  vendor_name: string
+  name: string | null
+  reason: string
+}
+
+export interface MapRobotsResponse {
+  robots: MapRobot[]
+  not_shown: MapRobotNotShown[]
+  /** Vendor problems, e.g. the vendor's cloud couldn't be reached. */
+  warnings: string[]
+}

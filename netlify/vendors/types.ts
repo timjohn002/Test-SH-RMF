@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { RobotTask, SignatureStatus, VendorStore, VendorTestResult, WorkState } from '../../src/types/api'
+import type { RobotPosition, RobotTask, SignatureStatus, VendorStore, VendorTestResult, WorkState } from '../../src/types/api'
 
 /** A `vendor_configs` row. `secrets` must never leave the server. */
 export interface VendorConfigRow {
@@ -64,6 +64,41 @@ export interface VendorContext {
   saveToken(token: string, expiresAt: Date): Promise<void>
 }
 
+/** A `robots` row as the Map page needs it. */
+export interface MapRobotRow {
+  id: string
+  vendor: string
+  external_id: string
+  name: string | null
+  model: string | null
+  online: boolean | null
+  /** Raw, in the vendor's frame. */
+  position: RobotPosition | null
+}
+
+/** Where a robot goes on the app's floor plans, or why it can't be drawn. */
+export type RobotPlacement =
+  | { floor_id: string; x_px: number; y_px: number; heading_rad: number | null }
+  | { reason: string }
+
+/** A vendor's floor setup for some robots, loaded once per Map request. */
+export interface MapPlacer {
+  /** Worth asking the vendor where it is (e.g. set up on at least one floor, not offline). */
+  isLocatable(robot: MapRobotRow): boolean
+  /** Place a robot (with its latest position) on an app floor. */
+  place(robot: MapRobotRow): RobotPlacement
+}
+
+/** Live robot positions on the app's floor plans (Map page). */
+export interface MapPositionsCapability {
+  /** A stored position older than this is fetched again. */
+  refreshAfterMs: number
+  /** Load the vendor's floor setup for these robots. */
+  prepare(robots: MapRobotRow[]): Promise<MapPlacer>
+  /** Current raw positions by robot id. Throws VendorApiError when the vendor can't be reached. */
+  locate(ctx: VendorContext, robots: MapRobotRow[]): Promise<Map<string, RobotPosition>>
+}
+
 export interface VendorAdapter {
   id: string
   name: string
@@ -93,4 +128,7 @@ export interface VendorAdapter {
   interpretWebhook(body: unknown): WebhookInterpretation
   /** Body to reply to the vendor with after a callback is accepted. */
   webhookAck: unknown
+
+  /** Robots on the Map page. Vendors without it don't appear there. */
+  mapPositions?: MapPositionsCapability
 }

@@ -16,6 +16,7 @@ import { VendorApiError } from '../vendors/errors'
 import { keenonAdapter, keenonClientFor } from '../vendors/keenon/adapter'
 import { getRobotLocation, getScenes } from '../vendors/keenon/api'
 import { discoverRobotMaps, locationToPosition } from '../vendors/keenon/mapDiscovery'
+import { currentScene, type SceneRow } from '../vendors/keenon/scene'
 import { contextFor, loadConfig } from '../vendors/store'
 
 // Keenon-only: which floors (maps) each Keenon robot knows, and which app floor each matches.
@@ -29,15 +30,6 @@ interface RobotRow {
   position: RobotPosition | null
 }
 
-interface SceneRow {
-  robot_id: string
-  detected_scene_code: string | null
-  detected_scene_name: string | null
-  manual_scene_code: string | null
-  manual_scene_name: string | null
-  discovered_at: string | null
-  discovery_error: string | null
-}
 
 const ROBOT_COLUMNS = 'id, external_id, name, model, store_external_id, position'
 const LOCATE_INTERVAL_MS = 2_500
@@ -86,14 +78,6 @@ async function callKeenon<T>(fn: () => Promise<T>): Promise<T> {
     if (err instanceof VendorApiError) throw new HttpError(502, err.message)
     throw err
   }
-}
-
-function currentScene(scene: SceneRow | undefined): KeenonRobotMapSummary['scene'] {
-  if (scene?.manual_scene_code) return { code: scene.manual_scene_code, name: scene.manual_scene_name, source: 'manual' }
-  if (scene?.detected_scene_code) {
-    return { code: scene.detected_scene_code, name: scene.detected_scene_name, source: 'detected' }
-  }
-  return { code: null, name: null, source: null }
 }
 
 async function storeNames(): Promise<Map<string, string | null>> {
@@ -417,10 +401,10 @@ async function clearAlignment(floorRowId: string): Promise<Response> {
 /** Just the robot's current position (much cheaper than full discovery). */
 async function locate(robotId: string): Promise<Response> {
   const robot = await loadRobot(robotId)
-  // Keenon recommends ~3 s between status queries; "Track robot" polls at that rate.
+  // Keenon recommends ~3 s between status queries. A position fetched moments ago (by this
+  // screen or the Map page) is returned as is rather than asking Keenon again.
   const lastFetch = robot.position?.fetched_at ? Date.parse(robot.position.fetched_at) : 0
-  const wait = LOCATE_INTERVAL_MS - (Date.now() - lastFetch)
-  if (wait > 0) throw new HttpError(429, `Located recently. Try again in ${Math.ceil(wait / 1000)} s.`)
+  if (robot.position && Date.now() - lastFetch < LOCATE_INTERVAL_MS) return json(robot.position)
 
   const client = await keenonClient()
   const location = await callKeenon(() => getRobotLocation(client, robot.external_id))

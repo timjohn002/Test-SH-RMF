@@ -4,6 +4,7 @@ import type { SyncedRobot, VendorAdapter, VendorConfigRow, VendorContext } from 
 import { getRobots, getStores } from './api'
 import { KeenonClient, KeenonError } from './client'
 import { KEENON_OK, KEENON_ONLINE_TYPE, type KeenonRobot } from './types'
+import { locateKeenonRobots, prepareKeenonPlacer } from './placement'
 import { interpretKeenonCallback, verifyKeenonSignature } from './webhook'
 
 const settingsSchema = z.object({
@@ -87,6 +88,12 @@ export const keenonAdapter: VendorAdapter = {
   credentialSettings: ['region', 'custom_base_url', 'client_id'],
   // Keenon disables IPs/clients that query too often (610609 / 617000).
   robotCapabilities: { refresh: true, refreshCooldownMs: 10_000 },
+  mapPositions: {
+    // The Map page polls every 5 s; Keenon recommends at least ~3 s between status queries.
+    refreshAfterMs: 4_000,
+    prepare: prepareKeenonPlacer,
+    locate: (ctx, robots) => locateKeenonRobots(keenonClientFor(ctx), robots),
+  },
 
   isConfigured(config) {
     const settings = settingsSchema.safeParse(config.settings)
