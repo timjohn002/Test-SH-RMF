@@ -4,9 +4,12 @@ Web app for managing robots, doors and elevators across building floors.
 
 **Current features**
 - **Map** (`/`): floor selector, drag/zoom floor plans, cursor position in meters.
+  - Robots appear as blue dots on the floor they're on, updated every 5 s. A robot is faded when it's offline or hasn't sent a position for 2 minutes.
+  - A **Robot names: Show / Hide** toggle (Show by default; Hide shows names on hover).
+  - Works for any vendor that supports map positions (Keenon today).
 - **Setup** (`/setup`): add floors, upload floor plans, and calibrate scale and origin.
 - **Robots** (`/robots`): live status of every vendor robot (online, battery, work state, current task).
-- **Vendors** (`/vendors`, admins only): configure robot vendor integrations. **Keenon** is supported.
+- **Vendors** (`/vendors`, admins only): configure robot vendor integrations. **Keenon** is supported, including its robot maps: discover each robot's floors, match them to app floors, align positions and calibrate to the floor plans.
 - **Users** (`/users`, admins only): add and delete accounts, and reset passwords.
 
 Door and elevator integration, and robot commands, come later.
@@ -29,7 +32,19 @@ Netlify Functions  (netlify/functions)  ── service-role key ──▶  Supab
 
 ### 1. Supabase
 1. Create a project at [supabase.com](https://supabase.com).
-2. Open **SQL Editor**, paste the contents of `supabase/migrations/0001_init.sql`, and click **Run**.
+2. Run every file in `supabase/migrations/`, **in number order**. For each one, open **SQL Editor**, paste the file's contents, and click **Run**.
+
+   | File | Adds |
+   |---|---|
+   | `0001_init.sql` | Accounts (`app_users`), floors, and the private `floor-plans` storage bucket |
+   | `0002_vendors.sql` | Vendor settings, stores, robots, and the callback log |
+   | `0003_keenon_robot_maps.sql` | Robot positions, Keenon scenes and floors (robot maps), and floor matching |
+   | `0004_keenon_floor_calibration.sql` | Keenon map → floor plan calibration |
+   | `0005_keenon_position_alignment.sql` | Keenon reported position → map alignment |
+
+   The files are safe to run again, so re-running one by mistake does no harm.
+
+**Updating an existing project:** if a `git pull` brings a new migration file, run just that file the same way.
 
 ### 2. Local settings (`.env.local`)
 `.env.local` in the project folder holds your settings and is never committed. If it's missing, copy `.env.example`. Fill in:
@@ -74,12 +89,13 @@ Each vendor integration is code. There's one adapter folder per vendor, register
 | Server registry | `netlify/vendors/index.ts` |
 | Keenon adapter (API client, callbacks, signature) | `netlify/vendors/keenon/` |
 | Config page per vendor | `src/vendors/index.ts` → `src/vendors/keenon/KeenonConfig.tsx` |
-| Tables | `supabase/migrations/0002_vendors.sql` (`vendor_configs`, `vendor_stores`, `robots`, `vendor_events`) |
+| Map positions (robots on the Map page) | `VendorAdapter.mapPositions`, used by `netlify/vendors/mapRobots.ts` (`GET /api/map/robots`) |
+| Tables | `0002_vendors.sql` (all vendors: `vendor_configs`, `vendor_stores`, `robots`, `vendor_events`); `0003`–`0005` (Keenon only: robot maps, calibration, position alignment) |
 
-To add a vendor, write an adapter that implements `VendorAdapter`, add it to both registries, and give it a config page.
+To add a vendor, write an adapter that implements `VendorAdapter`, add it to both registries, and give it a config page. To show its robots on the Map, also implement `mapPositions`. The Map page itself needs no changes.
 
 ### Keenon setup
-1. Run `supabase/migrations/0002_vendors.sql` once.
+1. Run the database migrations (see [First-time setup](#first-time-setup)).
 2. **Keenon only accepts API calls from whitelisted IPs.** Netlify has no fixed outbound IP, so run the app locally on the whitelisted network (`npm run dev`).
 3. Go to **Vendors → Keenon** and choose the region:
 
@@ -103,6 +119,23 @@ Environment variables:
 | `PUBLIC_SITE_URL` | Public base URL used in callback URLs |
 | `KEENON_SCHEDULED_SYNC=true` | Hourly robot re-sync. Only enable it once the server has a whitelisted outbound IP. |
 
+### Putting Keenon robots on the map
+Set this up for each robot, from the whitelisted network. Start at **Vendors → Keenon → Robot maps** and click **Open** next to the robot.
+
+1. **Discover floors.** Finds the floors (maps) of the robot's current scene. Floors from older scenes are removed.
+2. **Match** each Keenon floor to an app floor ("Matches app floor").
+3. **Align position.** Keenon reports positions in a different frame from its map image (usually rotated 180° and shifted). Turn on **Track robot**, then either:
+   - take one sample with the 180° preset (quick), or
+   - take 2–3 samples a few metres apart (more accurate).
+
+   Push the robot and check that the red dot follows it. Then save.
+4. **Calibrate.** Pair points on the Keenon map with the same spots on the app floor plan.
+5. The robot now appears on the **Map** page.
+
+The alignment can change when a robot restarts or relocalizes. If a robot looks out of place, re-check that floor with **Align position → Track robot**. Admins see a "robots not on the map" note on the Map page that explains what's missing for each robot.
+
+On the Netlify site, Keenon can't be reached (IP whitelist), so the Map shows the last known positions, faded after 2 minutes.
+
 ### Testing without real robots
 ```bash
 npm run keenon:mock      # fake Keenon Cloud on http://localhost:4010 (client "mock-client" / "mock-secret")
@@ -114,7 +147,7 @@ npm run keenon:callbacks -- --url <callback URL> [--secret <client secret>]   # 
 |---|---|
 | `npm run dev` | App and API locally on :8888 |
 | `npm run build` | Type-check and production build |
-| `npm test` | Unit tests (coordinates, passwords, sessions, Keenon client and callbacks) |
+| `npm test` | Unit tests (coordinates, passwords, sessions, Keenon client and callbacks, map calibration and alignment, Map placement) |
 | `npm run create-user` | Create or reset an account from the command line |
 | `npm run keenon:mock` | Fake Keenon Cloud for local testing |
 | `npm run keenon:callbacks` | Send example Keenon callbacks to a webhook URL |
